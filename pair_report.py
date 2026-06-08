@@ -1,6 +1,45 @@
 from database import get_pair_by_id, get_price_checks_for_pair
 
 
+def calculate_idea_result_score(checks):
+    score = 0
+    flat_threshold = 0.2
+
+    for check in checks:
+        (
+            check_period,
+            old_price_usd,
+            new_price_usd,
+            price_change_percent,
+            checked_at
+        ) = check
+
+        if price_change_percent is None:
+            continue
+
+        if price_change_percent > flat_threshold:
+            score += 25
+        elif abs(price_change_percent) <= flat_threshold:
+            score += 10
+
+    if score > 100:
+        score = 100
+
+    return score
+
+def get_idea_quality(idea_result_score):
+    if idea_result_score <= 25:
+        return "WEAK (СЛАБАЯ)"
+
+    if idea_result_score <= 50:
+        return "NEUTRAL (НЕЙТРАЛЬНАЯ)"
+
+    if idea_result_score <= 75:
+        return "GOOD (ХОРОШАЯ)"
+
+    return "STRONG (СИЛЬНАЯ)"
+
+
 def get_result_status(checks):
     positive_count = 0
     negative_count = 0
@@ -90,15 +129,18 @@ def print_checks_summary(checks):
         return
 
     result_status, result_description = get_result_status(checks)
+    idea_result_score = calculate_idea_result_score(checks)
+    idea_quality = get_idea_quality(idea_result_score)
 
     print("\nИтог по паре:")
     print("-----------------------------")
     print("Максимальный результат:", best_check[0], "→", best_check[3], "%")
     print("Минимальный результат:", worst_check[0], "→", worst_check[3], "%")
     print("Result status (статус результата):", result_status)
+    print("Idea result score (оценка результата идеи):", idea_result_score)
+    print("Idea quality (качество идеи):", idea_quality)
     print("Вывод:", result_description)
-
-
+    
 def print_pair_report(pair_id):
     pair = get_pair_by_id(pair_id)
 
