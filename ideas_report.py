@@ -47,6 +47,10 @@ def print_summary(pairs):
     accurate_count = 0
     underestimated_count = 0
     no_score_count = 0
+    checked_final_score_sum = 0
+    checked_idea_result_score_sum = 0
+    checked_difference_sum = 0
+    checked_score_count = 0
 
     for pair in pairs:
         (
@@ -75,6 +79,13 @@ def print_summary(pairs):
                 final_score,
                 idea_result_score
             )
+            if final_score is not None:
+                difference = idea_result_score - final_score
+
+                checked_final_score_sum += final_score
+                checked_idea_result_score_sum += idea_result_score
+                checked_difference_sum += difference
+                checked_score_count += 1
 
             if idea_quality.startswith("WEAK"):
                 weak_quality_count += 1
@@ -131,6 +142,21 @@ def print_summary(pairs):
     print("ACCURATE (БЛИЗКО):", accurate_count)
     print("UNDERESTIMATED (НЕДООЦЕНИЛА):", underestimated_count)
     print("NO_SCORE (НЕТ ОЦЕНКИ):", no_score_count)
+
+    if checked_score_count > 0:
+        average_final_score = checked_final_score_sum / checked_score_count
+        average_idea_result_score = checked_idea_result_score_sum / checked_score_count
+        average_difference = checked_difference_sum / checked_score_count
+    else:
+        average_final_score = 0
+        average_idea_result_score = 0
+        average_difference = 0
+
+    print("\nСредние значения по проверенным идеям:")
+    print("-----------------------------")
+    print("Средний Final score проверенных идей:", round(average_final_score, 2))
+    print("Средний Idea result score проверенных идей:", round(average_idea_result_score, 2))
+    print("Средняя разница:", round(average_difference, 2))
 
 
 def print_ideas_report():
