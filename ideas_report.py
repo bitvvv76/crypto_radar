@@ -1,4 +1,4 @@
-from database import get_all_pairs, get_price_checks_count_for_pair, get_main_price_checks_for_pair
+from database import get_all_pairs, get_price_checks_count_for_pair, get_price_checks_for_pair
 from analytics import calculate_idea_result_score, get_idea_quality, get_score_accuracy_status
 
 def get_check_status(price_checks_count):
@@ -132,7 +132,7 @@ def print_ideas_report():
         print("Статус проверки:", check_status)
 
         if check_status.startswith("COMPLETE"):
-            checks = get_main_price_checks_for_pair(pair_id)
+            checks = get_price_checks_for_pair(pair_id)
             idea_result_score = calculate_idea_result_score(checks)
             idea_quality = get_idea_quality(idea_result_score)
             score_accuracy_status = get_score_accuracy_status(
