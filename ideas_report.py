@@ -1,4 +1,4 @@
-from database import get_all_pairs, get_price_checks_count_for_pair
+from database import get_all_pairs, get_price_checks_count_for_pair, get_main_price_checks_for_pair
 
 def get_check_status(price_checks_count):
     if price_checks_count == 0:
@@ -23,6 +23,45 @@ def get_idea_priority(final_score):
         return "LOW (НИЗКИЙ)"
 
     return "VERY_LOW (ОЧЕНЬ НИЗКИЙ)"
+
+def calculate_idea_result_score(checks):
+    score = 0
+    flat_threshold = 0.2
+
+    for check in checks:
+        (
+            check_period,
+            old_price_usd,
+            new_price_usd,
+            price_change_percent,
+            checked_at
+        ) = check
+
+        if price_change_percent is None:
+            continue
+
+        if price_change_percent > flat_threshold:
+            score += 25
+        elif abs(price_change_percent) <= flat_threshold:
+            score += 10
+
+    if score > 100:
+        score = 100
+
+    return score
+
+
+def get_idea_quality(idea_result_score):
+    if idea_result_score <= 25:
+        return "WEAK (СЛАБАЯ)"
+
+    if idea_result_score <= 50:
+        return "NEUTRAL (НЕЙТРАЛЬНАЯ)"
+
+    if idea_result_score <= 75:
+        return "GOOD (ХОРОШАЯ)"
+
+    return "STRONG (СИЛЬНАЯ)"
 
 def print_summary(pairs):
     total_ideas = len(pairs)
@@ -127,6 +166,14 @@ def print_ideas_report():
 
         print("Проверок цены:", price_checks_count)
         print("Статус проверки:", check_status)
+
+        if check_status.startswith("COMPLETE"):
+            checks = get_main_price_checks_for_pair(pair_id)
+            idea_result_score = calculate_idea_result_score(checks)
+            idea_quality = get_idea_quality(idea_result_score)
+
+            print("Idea result score (оценка результата идеи):", idea_result_score)
+            print("Idea quality (качество идеи):", idea_quality)
 
         print("Дата сохранения:", created_at)
 
