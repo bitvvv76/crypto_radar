@@ -1,6 +1,64 @@
 from database import get_pair_by_id, get_price_checks_for_pair
 
 
+def get_result_status(checks):
+    positive_count = 0
+    negative_count = 0
+    flat_count = 0
+
+    flat_threshold = 0.2
+
+    for check in checks:
+        (
+            check_period,
+            old_price_usd,
+            new_price_usd,
+            price_change_percent,
+            checked_at
+        ) = check
+
+        if price_change_percent is None:
+            continue
+
+        if abs(price_change_percent) <= flat_threshold:
+            flat_count += 1
+        elif price_change_percent > 0:
+            positive_count += 1
+        else:
+            negative_count += 1
+
+    total_count = positive_count + negative_count + flat_count
+
+    if total_count == 0:
+        return (
+            "NO_DATA (НЕТ ДАННЫХ)",
+            "Недостаточно данных для анализа"
+        )
+
+    if flat_count == total_count:
+        return (
+            "FLAT (ФЛЭТ)",
+            "По текущим проверкам сильного движения нет"
+        )
+
+    if positive_count > negative_count:
+        return (
+            "POSITIVE (ПОЗИТИВНО)",
+            "По текущим проверкам положительная динамика преобладает"
+        )
+
+    if negative_count > positive_count:
+        return (
+            "NEGATIVE (НЕГАТИВНО)",
+            "По текущим проверкам отрицательная динамика преобладает"
+        )
+
+    return (
+        "MIXED (СМЕШАННО)",
+        "По текущим проверкам динамика неоднозначная"
+    )
+
+
 def print_checks_summary(checks):
     if not checks:
         return
@@ -31,19 +89,14 @@ def print_checks_summary(checks):
         print("Недостаточно данных для анализа")
         return
 
+    result_status, result_description = get_result_status(checks)
+
     print("\nИтог по паре:")
     print("-----------------------------")
     print("Максимальный результат:", best_check[0], "→", best_check[3], "%")
     print("Минимальный результат:", worst_check[0], "→", worst_check[3], "%")
-
-    if best_check[3] > 0 and worst_check[3] >= 0:
-        print("Общий вывод: по всем проверкам пара показала положительную динамику")
-    elif best_check[3] > 0 and worst_check[3] < 0:
-        print("Общий вывод: динамика смешанная, были и рост, и просадка")
-    elif best_check[3] <= 0:
-        print("Общий вывод: по текущим проверкам роста нет, идея ушла в минус")
-    else:
-        print("Общий вывод: данных недостаточно для уверенного вывода")
+    print("Result status (статус результата):", result_status)
+    print("Вывод:", result_description)
 
 
 def print_pair_report(pair_id):
