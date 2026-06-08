@@ -65,7 +65,7 @@ def get_decision_note(result_status, idea_quality, score_accuracy_status):
 
 def print_score_comparison(final_score, idea_result_score, result_status, idea_quality):
     if final_score is None:
-        print("\nСравнение оценки:")
+        print("\n4. Сравнение scoring-модели")
         print("Final score при нахождении отсутствует")
         return
 
@@ -78,14 +78,14 @@ def print_score_comparison(final_score, idea_result_score, result_status, idea_q
         score_accuracy_status
     )
 
-    print("\nСравнение оценки:")
+    print("\n4. Сравнение scoring-модели")
     print("-----------------------------")
     print("Final score при нахождении:", final_score)
     print("Idea result score после проверок:", idea_result_score)
     print("Разница:", difference)
     print("Score accuracy (точность оценки):", score_accuracy_status)
 
-    print("\nDecision note (аналитическая заметка):")
+    print("\n5. Decision note (аналитическая заметка)")
     print(decision_note)
 
     if difference >= 20:
@@ -180,7 +180,7 @@ def print_checks_summary(checks, final_score):
             worst_check = check
 
     if best_check is None or worst_check is None:
-        print("\nИтог по паре:")
+        print("\n3. Итог по идее")
         print("Недостаточно данных для анализа")
         return
 
@@ -188,7 +188,7 @@ def print_checks_summary(checks, final_score):
     idea_result_score = calculate_idea_result_score(checks)
     idea_quality = get_idea_quality(idea_result_score)
 
-    print("\nИтог по паре:")
+    print("\n3. Итог по идее")
     print("-----------------------------")
     print("Максимальный результат:", best_check[0], "→", best_check[3], "%")
     print("Минимальный результат:", worst_check[0], "→", worst_check[3], "%")
@@ -221,7 +221,10 @@ def print_pair_report(pair_id):
 
     checks = get_price_checks_for_pair(pair_id)
 
-    print("Отчёт по паре")
+    print("CRYPTO RADAR — ОТЧЁТ ПО ПАРЕ")
+    print("=============================")
+
+    print("\n1. Основная информация")
     print("-----------------------------")
     print("ID пары:", saved_pair_id)
     print("Сеть:", chain_id)
@@ -234,7 +237,7 @@ def print_pair_report(pair_id):
         print("\nПроверок цены пока нет")
         return
 
-    print("\nПроверки цены:")
+    print("\n2. Проверки цены")
 
     for check in checks:
         (
