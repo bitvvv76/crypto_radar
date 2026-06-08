@@ -1,0 +1,9 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+.env
+crypto_radar.db
+
+.vscode/
