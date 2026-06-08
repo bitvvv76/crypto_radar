@@ -1,4 +1,5 @@
 from database import get_all_pairs, get_price_checks_count_for_pair, get_main_price_checks_for_pair
+from analytics import calculate_idea_result_score, get_idea_quality, get_score_accuracy_status
 
 def get_check_status(price_checks_count):
     if price_checks_count == 0:
@@ -24,58 +25,7 @@ def get_idea_priority(final_score):
 
     return "VERY_LOW (ОЧЕНЬ НИЗКИЙ)"
 
-def calculate_idea_result_score(checks):
-    score = 0
-    flat_threshold = 0.2
 
-    for check in checks:
-        (
-            check_period,
-            old_price_usd,
-            new_price_usd,
-            price_change_percent,
-            checked_at
-        ) = check
-
-        if price_change_percent is None:
-            continue
-
-        if price_change_percent > flat_threshold:
-            score += 25
-        elif abs(price_change_percent) <= flat_threshold:
-            score += 10
-
-    if score > 100:
-        score = 100
-
-    return score
-
-
-def get_idea_quality(idea_result_score):
-    if idea_result_score <= 25:
-        return "WEAK (СЛАБАЯ)"
-
-    if idea_result_score <= 50:
-        return "NEUTRAL (НЕЙТРАЛЬНАЯ)"
-
-    if idea_result_score <= 75:
-        return "GOOD (ХОРОШАЯ)"
-
-    return "STRONG (СИЛЬНАЯ)"
-
-def get_score_accuracy_status(final_score, idea_result_score):
-    if final_score is None:
-        return "NO_SCORE (НЕТ ОЦЕНКИ)"
-
-    difference = idea_result_score - final_score
-
-    if difference < -10:
-        return "OVERESTIMATED (ПЕРЕОЦЕНИЛА)"
-
-    if difference > 10:
-        return "UNDERESTIMATED (НЕДООЦЕНИЛА)"
-
-    return "ACCURATE (БЛИЗКО)"
 
 def print_summary(pairs):
     total_ideas = len(pairs)
