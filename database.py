@@ -296,3 +296,33 @@ def price_check_exists(pair_id, check_period):
     connection.close()
 
     return result is not None
+
+def get_price_checks_for_pair(pair_id):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            check_period,
+            old_price_usd,
+            new_price_usd,
+            price_change_percent,
+            checked_at
+        FROM price_checks
+        WHERE pair_id = ?
+        AND check_period IN ('1h', '6h', '24h', '7d')
+        ORDER BY
+            CASE check_period
+                WHEN '1h' THEN 1
+                WHEN '6h' THEN 2
+                WHEN '24h' THEN 3
+                WHEN '7d' THEN 4
+                ELSE 5
+            END
+    """, (pair_id,))
+
+    rows = cursor.fetchall()
+
+    connection.close()
+
+    return rows
