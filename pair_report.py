@@ -39,6 +39,15 @@ def get_idea_quality(idea_result_score):
 
     return "STRONG (СИЛЬНАЯ)"
 
+def get_score_accuracy_status(difference):
+    if difference < -10:
+        return "OVERESTIMATED (ПЕРЕОЦЕНИЛА)"
+
+    if difference > 10:
+        return "UNDERESTIMATED (НЕДООЦЕНИЛА)"
+
+    return "ACCURATE (БЛИЗКО)"
+
 def print_score_comparison(final_score, idea_result_score):
     if final_score is None:
         print("\nСравнение оценки:")
@@ -46,12 +55,14 @@ def print_score_comparison(final_score, idea_result_score):
         return
 
     difference = idea_result_score - final_score
+    score_accuracy_status = get_score_accuracy_status(difference)
 
     print("\nСравнение оценки:")
     print("-----------------------------")
     print("Final score при нахождении:", final_score)
     print("Idea result score после проверок:", idea_result_score)
     print("Разница:", difference)
+    print("Score accuracy (точность оценки):", score_accuracy_status)
 
     if difference >= 20:
         print("Вывод по scoring: фактический результат оказался лучше первичной оценки")
