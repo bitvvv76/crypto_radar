@@ -48,7 +48,22 @@ def get_score_accuracy_status(difference):
 
     return "ACCURATE (БЛИЗКО)"
 
-def print_score_comparison(final_score, idea_result_score):
+def get_decision_note(result_status, idea_quality, score_accuracy_status):
+    if result_status.startswith("POSITIVE") and idea_quality.startswith(("GOOD", "STRONG")):
+        return "Идея подтверждается текущими проверками. Нужно продолжать наблюдение и проверять результат на большем количестве похожих случаев."
+
+    if result_status.startswith("NEGATIVE") and score_accuracy_status.startswith("OVERESTIMATED"):
+        return "Идея не подтверждена текущими проверками. Первичная оценка была завышена. Нужна доработка scoring-модели на большем количестве наблюдений."
+
+    if result_status.startswith("MIXED"):
+        return "Динамика неоднозначная. Идею нельзя считать подтверждённой или проваленной без дополнительных наблюдений."
+
+    if result_status.startswith("FLAT"):
+        return "Сильного движения по идее пока нет. Нужно больше времени или дополнительные фильтры для оценки."
+
+    return "Недостаточно данных для уверенного аналитического вывода."
+
+def print_score_comparison(final_score, idea_result_score, result_status, idea_quality):
     if final_score is None:
         print("\nСравнение оценки:")
         print("Final score при нахождении отсутствует")
@@ -57,12 +72,21 @@ def print_score_comparison(final_score, idea_result_score):
     difference = idea_result_score - final_score
     score_accuracy_status = get_score_accuracy_status(difference)
 
+    decision_note = get_decision_note(
+        result_status,
+        idea_quality,
+        score_accuracy_status
+    )
+
     print("\nСравнение оценки:")
     print("-----------------------------")
     print("Final score при нахождении:", final_score)
     print("Idea result score после проверок:", idea_result_score)
     print("Разница:", difference)
     print("Score accuracy (точность оценки):", score_accuracy_status)
+
+    print("\nDecision note (аналитическая заметка):")
+    print(decision_note)
 
     if difference >= 20:
         print("Вывод по scoring: фактический результат оказался лучше первичной оценки")
@@ -172,7 +196,12 @@ def print_checks_summary(checks, final_score):
     print("Idea result score (оценка результата идеи):", idea_result_score)
     print("Idea quality (качество идеи):", idea_quality)
     print("Вывод:", result_description)
-    print_score_comparison(final_score, idea_result_score)
+    print_score_comparison(
+        final_score,
+        idea_result_score,
+        result_status,
+        idea_quality
+    )
 
 def print_pair_report(pair_id):
     pair = get_pair_by_id(pair_id)
