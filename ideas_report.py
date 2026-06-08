@@ -24,6 +24,62 @@ def get_idea_priority(final_score):
 
     return "VERY_LOW (ОЧЕНЬ НИЗКИЙ)"
 
+def print_summary(pairs):
+    total_ideas = len(pairs)
+
+    complete_count = 0
+    in_progress_count = 0
+    not_checked_count = 0
+
+    high_count = 0
+    medium_count = 0
+    low_count = 0
+    very_low_count = 0
+
+    for pair in pairs:
+        (
+            pair_id,
+            chain_id,
+            dex_id,
+            pair_symbol,
+            price_usd,
+            risk_score,
+            potential_score,
+            final_score,
+            created_at
+        ) = pair
+
+        price_checks_count = get_price_checks_count_for_pair(pair_id)
+        check_status = get_check_status(price_checks_count)
+        idea_priority = get_idea_priority(final_score)
+
+        if check_status.startswith("COMPLETE"):
+            complete_count += 1
+        elif check_status.startswith("IN_PROGRESS"):
+            in_progress_count += 1
+        else:
+            not_checked_count += 1
+
+        if idea_priority.startswith("HIGH"):
+            high_count += 1
+        elif idea_priority.startswith("MEDIUM"):
+            medium_count += 1
+        elif idea_priority.startswith("LOW"):
+            low_count += 1
+        elif idea_priority.startswith("VERY_LOW"):
+            very_low_count += 1
+
+    print("\nСводка:")
+    print("-----------------------------")
+    print("Всего идей:", total_ideas)
+    print("Проверено полностью:", complete_count)
+    print("В процессе проверки:", in_progress_count)
+    print("Не проверялись:", not_checked_count)
+    print("HIGH priority:", high_count)
+    print("MEDIUM priority:", medium_count)
+    print("LOW priority:", low_count)
+    print("VERY_LOW priority:", very_low_count)
+
 
 def print_ideas_report():
     pairs = get_all_pairs()
@@ -34,6 +90,8 @@ def print_ideas_report():
     if not pairs:
         print("Сохранённых пар пока нет")
         return
+    
+    print_summary(pairs)
 
     print("\nСохранённые пары:")
     print("-----------------------------")
