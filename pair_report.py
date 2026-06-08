@@ -1,6 +1,51 @@
 from database import get_pair_by_id, get_price_checks_for_pair
 
 
+def print_checks_summary(checks):
+    if not checks:
+        return
+
+    best_check = None
+    worst_check = None
+
+    for check in checks:
+        (
+            check_period,
+            old_price_usd,
+            new_price_usd,
+            price_change_percent,
+            checked_at
+        ) = check
+
+        if price_change_percent is None:
+            continue
+
+        if best_check is None or price_change_percent > best_check[3]:
+            best_check = check
+
+        if worst_check is None or price_change_percent < worst_check[3]:
+            worst_check = check
+
+    if best_check is None or worst_check is None:
+        print("\nИтог по паре:")
+        print("Недостаточно данных для анализа")
+        return
+
+    print("\nИтог по паре:")
+    print("-----------------------------")
+    print("Максимальный результат:", best_check[0], "→", best_check[3], "%")
+    print("Минимальный результат:", worst_check[0], "→", worst_check[3], "%")
+
+    if best_check[3] > 0 and worst_check[3] >= 0:
+        print("Общий вывод: по всем проверкам пара показала положительную динамику")
+    elif best_check[3] > 0 and worst_check[3] < 0:
+        print("Общий вывод: динамика смешанная, были и рост, и просадка")
+    elif best_check[3] <= 0:
+        print("Общий вывод: по текущим проверкам роста нет, идея ушла в минус")
+    else:
+        print("Общий вывод: данных недостаточно для уверенного вывода")
+
+
 def print_pair_report(pair_id):
     pair = get_pair_by_id(pair_id)
 
@@ -47,6 +92,8 @@ def print_pair_report(pair_id):
         print("Новая цена:", new_price_usd)
         print("Изменение цены %:", price_change_percent)
         print("Дата проверки:", checked_at)
+
+    print_checks_summary(checks)
 
 
 def main():
