@@ -63,6 +63,20 @@ def get_idea_quality(idea_result_score):
 
     return "STRONG (СИЛЬНАЯ)"
 
+def get_score_accuracy_status(final_score, idea_result_score):
+    if final_score is None:
+        return "NO_SCORE (НЕТ ОЦЕНКИ)"
+
+    difference = idea_result_score - final_score
+
+    if difference < -10:
+        return "OVERESTIMATED (ПЕРЕОЦЕНИЛА)"
+
+    if difference > 10:
+        return "UNDERESTIMATED (НЕДООЦЕНИЛА)"
+
+    return "ACCURATE (БЛИЗКО)"
+
 def print_summary(pairs):
     total_ideas = len(pairs)
 
@@ -171,9 +185,14 @@ def print_ideas_report():
             checks = get_main_price_checks_for_pair(pair_id)
             idea_result_score = calculate_idea_result_score(checks)
             idea_quality = get_idea_quality(idea_result_score)
+            score_accuracy_status = get_score_accuracy_status(
+                final_score,
+                idea_result_score
+            )
 
             print("Idea result score (оценка результата идеи):", idea_result_score)
             print("Idea quality (качество идеи):", idea_quality)
+            print("Score accuracy (точность оценки):", score_accuracy_status)
 
         print("Дата сохранения:", created_at)
 
