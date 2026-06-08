@@ -1,5 +1,18 @@
-from database import get_pairs_for_next_checks, get_price_checks_count_for_pair
+from database import (
+    get_pairs_for_next_checks,
+    get_price_checks_count_for_pair,
+    get_existing_check_periods_for_pair
+)
 from ideas_report import get_check_status, get_idea_priority
+
+def get_next_check_period(existing_periods):
+    required_periods = ["1h", "6h", "24h", "7d"]
+
+    for period in required_periods:
+        if period not in existing_periods:
+            return period
+
+    return "COMPLETE"
 
 
 def print_next_checks():
@@ -29,6 +42,8 @@ def print_next_checks():
 
         price_checks_count = get_price_checks_count_for_pair(pair_id)
         check_status = get_check_status(price_checks_count)
+        existing_periods = get_existing_check_periods_for_pair(pair_id)
+        next_check_period = get_next_check_period(existing_periods)
 
         if check_status.startswith("COMPLETE"):
             continue
@@ -47,8 +62,8 @@ def print_next_checks():
         print("Idea priority (приоритет идеи):", idea_priority)
         print("Проверок цены:", price_checks_count)
         print("Статус проверки:", check_status)
+        print("Следующая проверка:", next_check_period)
         print("Дата сохранения:", created_at)
-
     if found_pairs == 0:
         print("\nВсе идеи уже полностью проверены")
 

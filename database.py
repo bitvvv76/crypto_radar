@@ -394,3 +394,25 @@ def get_pairs_for_next_checks():
     connection.close()
 
     return rows
+
+def get_existing_check_periods_for_pair(pair_id):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT check_period
+        FROM price_checks
+        WHERE pair_id = ?
+        AND check_period IN ('1h', '6h', '24h', '7d')
+    """, (pair_id,))
+
+    rows = cursor.fetchall()
+
+    connection.close()
+
+    periods = []
+
+    for row in rows:
+        periods.append(row[0])
+
+    return periods
