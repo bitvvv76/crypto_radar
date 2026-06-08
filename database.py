@@ -370,3 +370,27 @@ def get_price_checks_count_for_pair(pair_id):
 
     return count
 
+def get_pairs_for_next_checks():
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            chain_id,
+            dex_id,
+            pair_symbol,
+            price_usd,
+            risk_score,
+            potential_score,
+            final_score,
+            created_at
+        FROM pairs
+        ORDER BY final_score DESC, id DESC
+    """)
+
+    rows = cursor.fetchall()
+
+    connection.close()
+
+    return rows
