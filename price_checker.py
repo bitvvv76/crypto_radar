@@ -14,7 +14,8 @@ def check_pair_price(pair_id, check_period):
         chain_id,
         pair_address,
         pair_symbol,
-        old_price_usd
+        old_price_usd,
+        final_score
     ) = saved_pair
 
     fresh_pair = get_pair_by_address(chain_id, pair_address)
