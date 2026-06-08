@@ -327,3 +327,45 @@ def get_price_checks_for_pair(pair_id):
     connection.close()
 
     return rows
+
+def get_all_pairs():
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            chain_id,
+            dex_id,
+            pair_symbol,
+            price_usd,
+            risk_score,
+            potential_score,
+            final_score,
+            created_at
+        FROM pairs
+        ORDER BY final_score DESC, id DESC
+    """)
+
+    rows = cursor.fetchall()
+
+    connection.close()
+
+    return rows
+
+def get_price_checks_count_for_pair(pair_id):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM price_checks
+        WHERE pair_id = ?
+        AND check_period IN ('1h', '6h', '24h', '7d')
+    """, (pair_id,))
+
+    count = cursor.fetchone()[0]
+
+    connection.close()
+
+    return count
