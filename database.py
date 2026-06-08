@@ -266,7 +266,8 @@ def get_pair_by_id(pair_id):
             chain_id,
             pair_address,
             pair_symbol,
-            price_usd
+            price_usd,
+            final_score
         FROM pairs
         WHERE id = ?
         LIMIT 1

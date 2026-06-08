@@ -39,6 +39,27 @@ def get_idea_quality(idea_result_score):
 
     return "STRONG (СИЛЬНАЯ)"
 
+def print_score_comparison(final_score, idea_result_score):
+    if final_score is None:
+        print("\nСравнение оценки:")
+        print("Final score при нахождении отсутствует")
+        return
+
+    difference = idea_result_score - final_score
+
+    print("\nСравнение оценки:")
+    print("-----------------------------")
+    print("Final score при нахождении:", final_score)
+    print("Idea result score после проверок:", idea_result_score)
+    print("Разница:", difference)
+
+    if difference >= 20:
+        print("Вывод по scoring: фактический результат оказался лучше первичной оценки")
+    elif difference <= -20:
+        print("Вывод по scoring: первичная оценка была выше фактического результата. Scoring-модель нужно будет улучшать на статистике")
+    else:
+        print("Вывод по scoring: первичная оценка близка к фактическому результату")
+
 
 def get_result_status(checks):
     positive_count = 0
@@ -98,7 +119,7 @@ def get_result_status(checks):
     )
 
 
-def print_checks_summary(checks):
+def print_checks_summary(checks, final_score):
     if not checks:
         return
 
@@ -140,7 +161,8 @@ def print_checks_summary(checks):
     print("Idea result score (оценка результата идеи):", idea_result_score)
     print("Idea quality (качество идеи):", idea_quality)
     print("Вывод:", result_description)
-    
+    print_score_comparison(final_score, idea_result_score)
+
 def print_pair_report(pair_id):
     pair = get_pair_by_id(pair_id)
 
@@ -153,7 +175,8 @@ def print_pair_report(pair_id):
         chain_id,
         pair_address,
         pair_symbol,
-        price_usd
+        price_usd,
+        final_score
     ) = pair
 
     checks = get_price_checks_for_pair(pair_id)
@@ -165,6 +188,7 @@ def print_pair_report(pair_id):
     print("Пара:", pair_symbol)
     print("Pair address (адрес пары):", pair_address)
     print("Цена при сохранении:", price_usd)
+    print("Final score при нахождении:", final_score)
 
     if not checks:
         print("\nПроверок цены пока нет")
@@ -188,7 +212,7 @@ def print_pair_report(pair_id):
         print("Изменение цены %:", price_change_percent)
         print("Дата проверки:", checked_at)
 
-    print_checks_summary(checks)
+    print_checks_summary(checks, final_score)
 
 
 def main():
