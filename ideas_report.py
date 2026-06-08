@@ -38,6 +38,15 @@ def print_summary(pairs):
     medium_count = 0
     low_count = 0
     very_low_count = 0
+    weak_quality_count = 0
+    neutral_quality_count = 0
+    good_quality_count = 0
+    strong_quality_count = 0
+
+    overestimated_count = 0
+    accurate_count = 0
+    underestimated_count = 0
+    no_score_count = 0
 
     for pair in pairs:
         (
@@ -58,6 +67,33 @@ def print_summary(pairs):
 
         if check_status.startswith("COMPLETE"):
             complete_count += 1
+
+            checks = get_price_checks_for_pair(pair_id)
+            idea_result_score = calculate_idea_result_score(checks)
+            idea_quality = get_idea_quality(idea_result_score)
+            score_accuracy_status = get_score_accuracy_status(
+                final_score,
+                idea_result_score
+            )
+
+            if idea_quality.startswith("WEAK"):
+                weak_quality_count += 1
+            elif idea_quality.startswith("NEUTRAL"):
+                neutral_quality_count += 1
+            elif idea_quality.startswith("GOOD"):
+                good_quality_count += 1
+            elif idea_quality.startswith("STRONG"):
+                strong_quality_count += 1
+
+            if score_accuracy_status.startswith("OVERESTIMATED"):
+                overestimated_count += 1
+            elif score_accuracy_status.startswith("ACCURATE"):
+                accurate_count += 1
+            elif score_accuracy_status.startswith("UNDERESTIMATED"):
+                underestimated_count += 1
+            elif score_accuracy_status.startswith("NO_SCORE"):
+                no_score_count += 1
+
         elif check_status.startswith("IN_PROGRESS"):
             in_progress_count += 1
         else:
@@ -82,6 +118,19 @@ def print_summary(pairs):
     print("MEDIUM priority:", medium_count)
     print("LOW priority:", low_count)
     print("VERY_LOW priority:", very_low_count)
+    print("\nКачество проверенных идей:")
+    print("-----------------------------")
+    print("WEAK (СЛАБАЯ):", weak_quality_count)
+    print("NEUTRAL (НЕЙТРАЛЬНАЯ):", neutral_quality_count)
+    print("GOOD (ХОРОШАЯ):", good_quality_count)
+    print("STRONG (СИЛЬНАЯ):", strong_quality_count)
+
+    print("\nТочность scoring-модели:")
+    print("-----------------------------")
+    print("OVERESTIMATED (ПЕРЕОЦЕНИЛА):", overestimated_count)
+    print("ACCURATE (БЛИЗКО):", accurate_count)
+    print("UNDERESTIMATED (НЕДООЦЕНИЛА):", underestimated_count)
+    print("NO_SCORE (НЕТ ОЦЕНКИ):", no_score_count)
 
 
 def print_ideas_report():
