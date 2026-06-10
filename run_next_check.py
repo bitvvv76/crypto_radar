@@ -4,8 +4,7 @@ from database import (
     get_existing_check_periods_for_pair
 )
 
-from ideas_report import get_check_status, get_idea_priority
-from next_checks import get_next_check_period
+from check_utils import get_check_status, get_idea_priority, get_next_check_period
 from price_checker import check_pair_price
 
 
@@ -100,6 +99,23 @@ def main():
     print("Старая цена:", result["old_price_usd"])
     print("Новая цена:", result["new_price_usd"])
     print("Изменение цены %:", result["price_change_percent"])
+    updated_checks_count = get_price_checks_count_for_pair(pair_id)
+    updated_check_status = get_check_status(updated_checks_count)
+    updated_existing_periods = get_existing_check_periods_for_pair(pair_id)
+    updated_next_check_period = get_next_check_period(updated_existing_periods)
+
+    print("\nОбновлённое состояние идеи:")
+    print("-----------------------------")
+    print("ID:", pair_id)
+    print("Пара:", pair_symbol)
+    print("Проверок цены:", updated_checks_count)
+    print("Статус проверки:", updated_check_status)
+    print("Следующая проверка:", updated_next_check_period)
+
+    if updated_next_check_period == "COMPLETE":
+        print("Идея полностью проверена по периодам 1h / 6h / 24h / 7d.")
+    else:
+        print("Следующий шаг: продолжить проверку периода", updated_next_check_period)
 
 
 if __name__ == "__main__":

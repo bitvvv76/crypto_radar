@@ -1,30 +1,11 @@
-from database import get_all_pairs, get_price_checks_count_for_pair, get_price_checks_for_pair
+from database import (
+    get_all_pairs,
+    get_price_checks_count_for_pair,
+    get_price_checks_for_pair,
+    get_existing_check_periods_for_pair
+)
 from analytics import calculate_idea_result_score, get_idea_quality, get_score_accuracy_status
-
-def get_check_status(price_checks_count):
-    if price_checks_count == 0:
-        return "NOT_CHECKED (НЕ ПРОВЕРЯЛАСЬ)"
-
-    if price_checks_count < 4:
-        return "IN_PROGRESS (В ПРОЦЕССЕ)"
-
-    return "COMPLETE (ПОЛНАЯ)"
-
-def get_idea_priority(final_score):
-    if final_score is None:
-        return "NO_SCORE (НЕТ ОЦЕНКИ)"
-
-    if final_score >= 75:
-        return "HIGH (ВЫСОКИЙ)"
-
-    if final_score >= 50:
-        return "MEDIUM (СРЕДНИЙ)"
-
-    if final_score >= 25:
-        return "LOW (НИЗКИЙ)"
-
-    return "VERY_LOW (ОЧЕНЬ НИЗКИЙ)"
-
+from check_utils import get_check_status, get_idea_priority, get_next_check_period
 
 
 def print_summary(pairs):
@@ -205,6 +186,10 @@ def print_ideas_report():
 
         print("Проверок цены:", price_checks_count)
         print("Статус проверки:", check_status)
+
+        existing_periods = get_existing_check_periods_for_pair(pair_id)
+        next_check_period = get_next_check_period(existing_periods)
+        print("Следующая проверка:", next_check_period)
 
         if check_status.startswith("COMPLETE"):
             checks = get_price_checks_for_pair(pair_id)

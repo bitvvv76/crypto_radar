@@ -3,16 +3,9 @@ from database import (
     get_price_checks_count_for_pair,
     get_existing_check_periods_for_pair
 )
-from ideas_report import get_check_status, get_idea_priority
+from check_utils import get_check_status, get_idea_priority, get_next_check_period
 
-def get_next_check_period(existing_periods):
-    required_periods = ["1h", "6h", "24h", "7d"]
 
-    for period in required_periods:
-        if period not in existing_periods:
-            return period
-
-    return "COMPLETE"
 
 
 def print_next_checks():
