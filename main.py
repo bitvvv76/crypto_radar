@@ -42,14 +42,46 @@ def main():
     create_tables()
     print("База данных готова")
 
-    data = search_pairs("SOL/USDC")
-    pairs = data.get("pairs", [])
-    valid_pairs = filter_valid_pairs(pairs)
+    search_queries = [
+    "SOL/USDC",
+    "ETH/USDC",
+    "BTC/USDC",
+    "AI/USDC",
+    "RWA/USDC",
+    ]
 
-    print(f"Найдено пар всего: {len(pairs)}")
-    print(f"После фильтра: {len(valid_pairs)}")
+    all_valid_pairs = []
+    seen_pairs = set()
+    total_found_pairs = 0
 
-    sorted_pairs = sorted(valid_pairs, key=calculate_final_score, reverse=True)
+    for query in search_queries:
+        print(f"\nПоисковый запрос: {query}")
+
+        data = search_pairs(query)
+        pairs = data.get("pairs", [])
+        valid_pairs = filter_valid_pairs(pairs)
+
+        print(f"Найдено пар: {len(pairs)}")
+        print(f"После фильтра: {len(valid_pairs)}")
+
+        total_found_pairs += len(pairs)
+
+        for pair in valid_pairs:
+            pair_key = (
+                pair.get("chainId"),
+                pair.get("pairAddress"),
+            )
+
+            if pair_key in seen_pairs:
+                continue
+
+            seen_pairs.add(pair_key)
+            all_valid_pairs.append(pair)
+
+    print(f"\nНайдено пар всего по всем запросам: {total_found_pairs}")
+    print(f"Уникальных пар после фильтра: {len(all_valid_pairs)}")
+
+    sorted_pairs = sorted(all_valid_pairs, key=calculate_final_score, reverse=True)
 
     new_pairs_count = 0
     existing_pairs_count = 0
