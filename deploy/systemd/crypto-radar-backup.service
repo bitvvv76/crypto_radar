@@ -1,0 +1,8 @@
+[Unit]
+Description=Crypto Radar database backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/crypto_radar
+ExecStart=/opt/crypto_radar/venv/bin/python /opt/crypto_radar/backup_database.py
+User=root
