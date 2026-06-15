@@ -8,3 +8,4 @@ __pycache__/
 crypto_radar.db
 
 .vscode/
+backups/
