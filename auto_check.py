@@ -4,7 +4,13 @@ from database import (
     get_price_checks_count_for_pair,
     get_existing_check_periods_for_pair,
 )
-from check_utils import get_check_status, get_next_check_period
+from check_utils import (
+    get_check_status,
+    get_next_check_period,
+    is_check_due,
+    get_time_until_check,
+    format_remaining_time,
+)
 
 
 def main():
@@ -22,6 +28,7 @@ def main():
     pair_id = pair_for_check["pair_id"]
     pair_symbol = pair_for_check["pair_symbol"]
     final_score = pair_for_check["final_score"]
+    created_at = pair_for_check["created_at"]
     next_check_period = pair_for_check["next_check_period"]
     price_checks_count = pair_for_check["price_checks_count"]
     check_status = pair_for_check["check_status"]
@@ -39,6 +46,17 @@ def main():
     if next_check_period == "COMPLETE":
         print()
         print("Идея уже полностью проверена. Автопроверка не требуется.")
+        return
+    
+    if not is_check_due(created_at, next_check_period):
+        remaining = get_time_until_check(created_at, next_check_period)
+
+        print()
+        print("Автопроверка пока не выполнена.")
+        print("Причина: нужный временной период ещё не наступил.")
+        print("Дата сохранения идеи:", created_at)
+        print("Следующий период:", next_check_period)
+        print("До проверки осталось:", format_remaining_time(remaining))
         return
 
     result = check_pair_price(pair_id, next_check_period)
