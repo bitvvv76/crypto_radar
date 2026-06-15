@@ -1,0 +1,10 @@
+[Unit]
+Description=Crypto Radar automatic price checks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/crypto_radar
+ExecStart=/opt/crypto_radar/venv/bin/python /opt/crypto_radar/auto_check_all.py
+User=root

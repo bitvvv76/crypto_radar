@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Crypto Radar price checks every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=crypto-radar-check.service
+
+[Install]
+WantedBy=timers.target
