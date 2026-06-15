@@ -1,3 +1,5 @@
+import sys
+
 from database import get_pair_by_id, get_price_checks_for_pair
 from analytics import (
     calculate_idea_result_score,
@@ -168,7 +170,10 @@ def print_pair_report(pair_id):
 
 
 def main():
-    pair_id_text = input("Введите ID пары для отчёта: ").strip()
+    if len(sys.argv) > 1:
+        pair_id_text = sys.argv[1].strip()
+    else:
+        pair_id_text = input("Введите ID пары для отчёта: ").strip()
 
     if not pair_id_text.isdigit():
         print("Ошибка: ID пары должен быть числом")
