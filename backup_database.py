@@ -12,7 +12,7 @@ MAX_BACKUPS = 14
 def cleanup_old_backups():
     backup_files = sorted(
         BACKUP_DIR.glob("crypto_radar_*.db"),
-        key=lambda file_path: file_path.stat().st_mtime,
+        key=lambda file_path: file_path.name,
         reverse=True,
     )
 
