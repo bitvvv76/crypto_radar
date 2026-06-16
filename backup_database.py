@@ -6,6 +6,21 @@ import shutil
 PROJECT_DIR = Path(__file__).resolve().parent
 DATABASE_FILE = PROJECT_DIR / "crypto_radar.db"
 BACKUP_DIR = PROJECT_DIR / "backups"
+MAX_BACKUPS = 14
+
+
+def cleanup_old_backups():
+    backup_files = sorted(
+        BACKUP_DIR.glob("crypto_radar_*.db"),
+        key=lambda file_path: file_path.stat().st_mtime,
+        reverse=True,
+    )
+
+    old_backups = backup_files[MAX_BACKUPS:]
+
+    for backup_file in old_backups:
+        backup_file.unlink()
+        print("Удалена старая резервная копия:", backup_file.name)
 
 
 def main():
@@ -23,6 +38,8 @@ def main():
     print("Резервная копия базы создана")
     print("Исходная база:", DATABASE_FILE)
     print("Копия:", backup_file)
+
+    cleanup_old_backups()
 
 
 if __name__ == "__main__":
