@@ -3,9 +3,9 @@ import sqlite3
 
 DB_NAME = "crypto_radar.db"
 
-
 def get_connection():
     connection = sqlite3.connect(DB_NAME)
+    connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
@@ -21,6 +21,7 @@ def create_tables():
             pair_address TEXT,
             pair_symbol TEXT,
             base_symbol TEXT,
+            base_token_address TEXT,
             quote_symbol TEXT,
             price_usd REAL,
             liquidity_usd REAL,
@@ -34,6 +35,18 @@ def create_tables():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    cursor.execute("PRAGMA table_info(pairs)")
+    pair_columns = {
+        row[1]
+        for row in cursor.fetchall()
+    }
+
+    if "base_token_address" not in pair_columns:
+        cursor.execute("""
+            ALTER TABLE pairs
+            ADD COLUMN base_token_address TEXT
+        """)
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS price_checks (
@@ -55,13 +68,17 @@ def save_pair(pair, risk_score, risk_level, potential_score, final_score):
     chain_id = pair.get("chainId")
     pair_address = pair.get("pairAddress")
 
+    base_token = pair.get("baseToken", {})
+    base_token_address = base_token.get("address")
+
     if pair_exists(chain_id, pair_address):
+        return False
+
+    if base_token_exists(chain_id, base_token_address):
         return False
 
     connection = get_connection()
     cursor = connection.cursor()
-
-    base_token = pair.get("baseToken", {})
     quote_token = pair.get("quoteToken", {})
     liquidity = pair.get("liquidity", {})
     volume = pair.get("volume", {})
@@ -79,6 +96,7 @@ def save_pair(pair, risk_score, risk_level, potential_score, final_score):
             pair_address,
             pair_symbol,
             base_symbol,
+            base_token_address,
             quote_symbol,
             price_usd,
             liquidity_usd,
@@ -90,13 +108,14 @@ def save_pair(pair, risk_score, risk_level, potential_score, final_score):
             final_score,
             url
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         pair.get("chainId"),
         pair.get("dexId"),
         pair.get("pairAddress"),
         pair_symbol,
         base_symbol,
+        base_token_address,
         quote_symbol,
         pair.get("priceUsd"),
         liquidity.get("usd"),
@@ -145,6 +164,32 @@ def pair_exists(chain_id, pair_address):
     connection.close()
 
     return result is not None
+
+def base_token_exists(chain_id, base_token_address):
+    if not chain_id or not base_token_address:
+        return False
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM pairs
+        WHERE chain_id = ?
+          AND base_token_address = ?
+        LIMIT 1
+        """,
+        (
+            chain_id,
+            base_token_address,
+        ),
+    )
+
+    row = cursor.fetchone()
+    connection.close()
+
+    return row is not None
 
 def get_last_pairs(limit=5):
     connection = get_connection()
