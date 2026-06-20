@@ -61,6 +61,18 @@ def create_tables():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_id INTEGER NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'watching',
+            note TEXT,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (pair_id) REFERENCES pairs (id) ON DELETE CASCADE
+        )
+    """)
+
     connection.commit()
     connection.close()
 
@@ -164,6 +176,33 @@ def pair_exists(chain_id, pair_address):
     connection.close()
 
     return result is not None
+
+def get_pair_id(chain_id, pair_address):
+    if not chain_id or not pair_address:
+        return None
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT id
+        FROM pairs
+        WHERE chain_id = ?
+          AND pair_address = ?
+        LIMIT 1
+    """, (
+        chain_id,
+        pair_address,
+    ))
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None
+
+    return row[0]
 
 def base_token_exists(chain_id, base_token_address):
     if not chain_id or not base_token_address:
@@ -461,3 +500,133 @@ def get_existing_check_periods_for_pair(pair_id):
         periods.append(row[0])
 
     return periods
+
+def add_to_watchlist(pair_id, note=None):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        INSERT OR IGNORE INTO watchlist (
+            pair_id,
+            note
+        )
+        SELECT ?, ?
+        WHERE EXISTS (
+            SELECT 1
+            FROM pairs
+            WHERE id = ?
+        )
+    """, (
+        pair_id,
+        note,
+        pair_id
+    ))
+
+    added = cursor.rowcount > 0
+
+    connection.commit()
+    connection.close()
+
+    return added
+
+def get_watchlist(status=None):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    query = """
+        SELECT
+            w.id,
+            w.pair_id,
+            p.chain_id,
+            p.dex_id,
+            p.pair_symbol,
+            p.price_usd,
+            p.risk_score,
+            p.risk_level,
+            p.potential_score,
+            p.final_score,
+            w.status,
+            w.note,
+            w.added_at,
+            w.updated_at
+        FROM watchlist AS w
+        JOIN pairs AS p ON p.id = w.pair_id
+    """
+
+    parameters = ()
+
+    if status is not None:
+        query += " WHERE w.status = ?"
+        parameters = (status,)
+
+    query += " ORDER BY p.final_score DESC, w.id DESC"
+
+    cursor.execute(query, parameters)
+    rows = cursor.fetchall()
+
+    connection.close()
+
+    return rows
+
+def update_watchlist_status(pair_id, status, note=None):
+    allowed_statuses = {
+        "watching",
+        "confirmed",
+        "rejected",
+        "archived",
+    }
+
+    if status not in allowed_statuses:
+        return False
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    if note is None:
+        cursor.execute("""
+            UPDATE watchlist
+            SET
+                status = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE pair_id = ?
+        """, (
+            status,
+            pair_id,
+        ))
+    else:
+        cursor.execute("""
+            UPDATE watchlist
+            SET
+                status = ?,
+                note = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE pair_id = ?
+        """, (
+            status,
+            note,
+            pair_id,
+        ))
+
+    updated = cursor.rowcount > 0
+
+    connection.commit()
+    connection.close()
+
+    return updated
+
+def remove_from_watchlist(pair_id):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        DELETE FROM watchlist
+        WHERE pair_id = ?
+    """, (pair_id,))
+
+    removed = cursor.rowcount > 0
+
+    connection.commit()
+    connection.close()
+
+    return removed
+

@@ -1,4 +1,10 @@
-from database import create_tables, get_pairs_count, save_pair
+from database import (
+    add_to_watchlist,
+    create_tables,
+    get_pair_id,
+    get_pairs_count,
+    save_pair,
+)
 from scanner import filter_valid_pairs, search_pairs
 from scoring import (
     calculate_final_score,
@@ -103,6 +109,8 @@ def main():
     existing_count = 0
     below_score_count = 0
 
+    watchlist_added_count = 0
+
     for pair in sorted_pairs:
         if saved_count >= MAX_NEW_IDEAS:
             break
@@ -131,6 +139,25 @@ def main():
 
         saved_count += 1
 
+        pair_id = get_pair_id(
+            pair.get("chainId"),
+            pair.get("pairAddress"),
+        )
+
+        added_to_watchlist = False
+
+        if pair_id is not None:
+            added_to_watchlist = add_to_watchlist(
+                pair_id,
+                (
+                    "Автоматически добавлена после auto_scan: "
+                    f"Final score {final_score}"
+                ),
+            )
+
+        if added_to_watchlist:
+            watchlist_added_count += 1
+
         base_symbol = pair.get("baseToken", {}).get("symbol")
         quote_symbol = pair.get("quoteToken", {}).get("symbol")
 
@@ -142,6 +169,12 @@ def main():
         print("Пара:", f"{base_symbol}/{quote_symbol}")
         print("Final score:", final_score)
 
+        print("Pair ID:", pair_id)
+        print(
+            "Добавлена в watchlist:",
+            "да" if added_to_watchlist else "нет",
+        )
+
     pairs_after = get_pairs_count()
 
     print()
@@ -150,6 +183,7 @@ def main():
     print("Всего найдено пар:", total_found_pairs)
     print("Уникальных после фильтра:", len(all_valid_pairs))
     print("Новых идей сохранено:", saved_count)
+    print("Добавлено в watchlist:", watchlist_added_count)
     print("Уже были в базе:", existing_count)
     print("Ниже минимального score:", below_score_count)
     print("Идей в базе до запуска:", pairs_before)
