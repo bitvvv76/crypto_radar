@@ -574,6 +574,7 @@ def update_watchlist_status(pair_id, status, note=None):
         "confirmed",
         "rejected",
         "archived",
+        "data_missing",
     }
 
     if status not in allowed_statuses:

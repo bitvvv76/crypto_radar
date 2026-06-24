@@ -16,6 +16,7 @@ def print_watchlist_report(status=None):
         "confirmed": 0,
         "rejected": 0,
         "archived": 0,
+        "data_missing": 0,
     }
 
     for watchlist_row in all_rows:
@@ -29,6 +30,7 @@ def print_watchlist_report(status=None):
     print(f"Подтверждено: {status_counts['confirmed']}")
     print(f"Отклонено: {status_counts['rejected']}")
     print(f"Архив: {status_counts['archived']}")
+    print(f"Нет свежих данных: {status_counts['data_missing']}")
 
     if not rows:
         if status is None:
@@ -153,6 +155,7 @@ if __name__ == "__main__":
         "confirmed",
         "rejected",
         "archived",
+        "data_missing",
     }
 
     selected_status = None
@@ -164,7 +167,7 @@ if __name__ == "__main__":
             print(f"Неизвестный статус: {selected_status}")
             print(
                 "Допустимые статусы: "
-                "watching, confirmed, rejected, archived"
+                "watching, confirmed, rejected, archived, data_missing"
             )
             raise SystemExit(1)
 
