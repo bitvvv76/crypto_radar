@@ -22,6 +22,7 @@ def main():
     completed_count = 0
     checked_count = 0
     waiting_count = 0
+    data_not_found_count = 0
     failed_count = 0
 
     for pair in pairs:
@@ -62,10 +63,29 @@ def main():
             waiting_count += 1
             continue
 
-        result = check_pair_price(pair_id, next_check_period)
+        result = check_pair_price(
+            pair_id,
+            next_check_period,
+            return_error=True,
+        )
 
         if result is None:
             print("Статус: ОШИБКА ПРОВЕРКИ")
+            failed_count += 1
+            continue
+
+        if result.get("status") == "DATA_NOT_FOUND":
+            print("Статус: DATA_NOT_FOUND")
+            data_not_found_count += 1
+            continue
+
+        if result.get("status") == "PRICE_NOT_FOUND":
+            print("Статус: PRICE_NOT_FOUND")
+            failed_count += 1
+            continue
+
+        if result.get("status") == "PAIR_NOT_FOUND":
+            print("Статус: PAIR_NOT_FOUND")
             failed_count += 1
             continue
 
@@ -84,6 +104,7 @@ def main():
     print("Уже полностью проверены:", completed_count)
     print("Проверок выполнено сейчас:", checked_count)
     print("Ещё не наступил срок:", waiting_count)
+    print("Пары без свежих данных:", data_not_found_count)
     print("Ошибок проверки:", failed_count)
 
 
