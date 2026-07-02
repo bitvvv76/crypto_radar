@@ -20,17 +20,21 @@ def calculate_risk_score(pair):
         risk_score += 15
 
     # 3. Риск по резкому росту цены
+    # По нашей статистике 7d: price_change_24h > 30% часто означает перегрев
     if price_change_24h > 200:
-        risk_score += 30
+        risk_score += 40
     elif price_change_24h > 100:
-        risk_score += 20
+        risk_score += 30
     elif price_change_24h > 50:
-        risk_score += 10
+        risk_score += 20
+    elif price_change_24h > 30:
+        risk_score += 20
 
     if risk_score > 100:
         risk_score = 100
 
     return risk_score
+
 
 def get_risk_level(risk_score):
     if risk_score <= 20:
@@ -40,6 +44,7 @@ def get_risk_level(risk_score):
         return "MEDIUM (СРЕДНИЙ)"
 
     return "HIGH (ВЫСОКИЙ)"
+
 
 def calculate_potential_score(pair):
     potential_score = 0
@@ -63,16 +68,20 @@ def calculate_potential_score(pair):
         potential_score += 10
 
     # 3. Потенциал по росту цены
-    if 5 <= price_change_24h <= 50:
+    # Рабочий импульс: от +5% до +30%
+    # Выше +30% считаем зоной перегрева, а не чистым потенциалом
+    if 5 <= price_change_24h <= 30:
         potential_score += 30
     elif 0 < price_change_24h < 5:
         potential_score += 15
 
-    # 4. Штраф за слишком сильный памп
+    # 4. Штраф за слишком сильный памп / перегрев
     if price_change_24h > 100:
         potential_score -= 30
     elif price_change_24h > 50:
-        potential_score -= 15
+        potential_score -= 20
+    elif price_change_24h > 30:
+        potential_score -= 10
 
     if potential_score < 0:
         potential_score = 0
@@ -81,6 +90,7 @@ def calculate_potential_score(pair):
         potential_score = 100
 
     return potential_score
+
 
 def calculate_final_score(pair):
     risk_score = calculate_risk_score(pair)
