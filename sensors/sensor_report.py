@@ -99,6 +99,46 @@ def load_latest_idea_from_db(db_path: str = DB_PATH) -> dict:
     finally:
         conn.close()
 
+def load_last_ideas_from_db(limit: int, db_path: str = DB_PATH) -> list[dict]:
+    """
+    Загружает несколько последних идей из локальной SQLite-базы.
+
+    Важно:
+    - только чтение
+    - без записи в БД
+    - без изменения структуры БД
+    - без подключения к auto_scan.py
+    """
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                id,
+                pair_symbol,
+                chain_id,
+                dex_id,
+                final_score,
+                risk_score,
+                liquidity_usd,
+                volume_24h,
+                price_change_24h
+            FROM pairs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
 
 def run_idea_report(idea: dict):
     if not idea:
@@ -123,6 +163,20 @@ def run_latest_from_db():
 def run_pair_id_from_db(pair_id: int):
     idea = load_idea_by_pair_id(pair_id)
     run_idea_report(idea)
+
+def run_last_from_db(limit: int):
+    ideas = load_last_ideas_from_db(limit)
+
+    if not ideas:
+        print("Нет идей в локальной базе.")
+        return
+
+    print(f"SENSOR REPORT: last {limit} ideas")
+    print()
+
+    for idea in ideas:
+        run_idea_report(idea)
+        print("-" * 60)
 
 
 def run_test_cases():
@@ -180,15 +234,22 @@ def main():
         help="Run Scam/Risk Sensor for a specific pair id from local crypto_radar.db",
     )
 
+    parser.add_argument(
+        "--last",
+        type=int,
+        help="Run Scam/Risk Sensor for the last N ideas from local crypto_radar.db",
+    )
+
     args = parser.parse_args()
 
     if args.latest:
         run_latest_from_db()
     elif args.pair_id is not None:
         run_pair_id_from_db(args.pair_id)
+    elif args.last is not None:
+        run_last_from_db(args.last)
     else:
         run_test_cases()
-
 
 if __name__ == "__main__":
     main()
