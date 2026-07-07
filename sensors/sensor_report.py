@@ -174,9 +174,47 @@ def run_last_from_db(limit: int):
     print(f"SENSOR REPORT: last {limit} ideas")
     print()
 
+    sensor = ScamRiskSensor()
+    results = []
+
     for idea in ideas:
-        run_idea_report(idea)
+        print("DB IDEA:")
+        print(idea)
+        print()
+
+        result = sensor.analyze(idea)
+        results.append(result)
+
+        print(result.to_text())
         print("-" * 60)
+
+    print_sensor_summary(results)
+
+
+def print_sensor_summary(results):
+    total = len(results)
+    ok_count = sum(1 for result in results if result.status == "ok")
+    warning_count = sum(1 for result in results if result.status == "warning")
+    reject_count = sum(1 for result in results if result.status == "reject")
+
+    rejected_pairs = [result.pair for result in results if result.status == "reject"]
+    warning_pairs = [result.pair for result in results if result.status == "warning"]
+
+    print("SUMMARY:")
+    print(f"Total: {total}")
+    print(f"OK: {ok_count}")
+    print(f"WARNING: {warning_count}")
+    print(f"REJECT: {reject_count}")
+
+    if warning_pairs:
+        print("Warning pairs:")
+        for pair in warning_pairs:
+            print(f"- {pair}")
+
+    if rejected_pairs:
+        print("Rejected pairs:")
+        for pair in rejected_pairs:
+            print(f"- {pair}")
 
 
 def run_test_cases():
