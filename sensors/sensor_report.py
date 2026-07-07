@@ -19,6 +19,47 @@ def run_case(title: str, idea: dict):
     print()
 
 
+def load_idea_by_pair_id(pair_id: int, db_path: str = DB_PATH) -> dict:
+    """
+    Загружает одну идею из локальной SQLite-базы по pair_id.
+
+    Важно:
+    - только чтение
+    - без записи в БД
+    - без изменения структуры БД
+    - без подключения к auto_scan.py
+    """
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                id,
+                pair_symbol,
+                chain_id,
+                dex_id,
+                final_score,
+                risk_score,
+                liquidity_usd,
+                volume_24h,
+                price_change_24h
+            FROM pairs
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (pair_id,),
+        )
+
+        row = cur.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
 def load_latest_idea_from_db(db_path: str = DB_PATH) -> dict:
     """
     Загружает последнюю идею из локальной SQLite-базы.
@@ -59,11 +100,9 @@ def load_latest_idea_from_db(db_path: str = DB_PATH) -> dict:
         conn.close()
 
 
-def run_latest_from_db():
-    idea = load_latest_idea_from_db()
-
+def run_idea_report(idea: dict):
     if not idea:
-        print("Нет идей в локальной базе.")
+        print("Идея не найдена в локальной базе.")
         return
 
     print("DB IDEA:")
@@ -74,6 +113,16 @@ def run_latest_from_db():
     result = sensor.analyze(idea)
 
     print(result.to_text())
+
+
+def run_latest_from_db():
+    idea = load_latest_idea_from_db()
+    run_idea_report(idea)
+
+
+def run_pair_id_from_db(pair_id: int):
+    idea = load_idea_by_pair_id(pair_id)
+    run_idea_report(idea)
 
 
 def run_test_cases():
@@ -125,11 +174,18 @@ def main():
         action="store_true",
         help="Run Scam/Risk Sensor for the latest idea from local crypto_radar.db",
     )
+    parser.add_argument(
+        "--pair-id",
+        type=int,
+        help="Run Scam/Risk Sensor for a specific pair id from local crypto_radar.db",
+    )
 
     args = parser.parse_args()
 
     if args.latest:
         run_latest_from_db()
+    elif args.pair_id is not None:
+        run_pair_id_from_db(args.pair_id)
     else:
         run_test_cases()
 
