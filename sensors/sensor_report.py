@@ -200,22 +200,21 @@ def print_sensor_summary(results):
     rejected_pairs = [result.pair for result in results if result.status == "reject"]
     warning_pairs = [result.pair for result in results if result.status == "warning"]
 
-    print("SUMMARY:")
-    print(f"Total: {total}")
-    print(f"OK: {ok_count}")
-    print(f"WARNING: {warning_count}")
-    print(f"REJECT: {reject_count}")
+    print("СВОДКА / SUMMARY:")
+    print(f"Всего / Total: {total}")
+    print(f"Норма / OK: {ok_count}")
+    print(f"Предупреждение / WARNING: {warning_count}")
+    print(f"Отказ / REJECT: {reject_count}")
 
     if warning_pairs:
-        print("Warning pairs:")
+        print("Пары с предупреждением / Warning pairs:")
         for pair in warning_pairs:
             print(f"- {pair}")
 
     if rejected_pairs:
-        print("Rejected pairs:")
+        print("Отклонённые пары / Rejected pairs:")
         for pair in rejected_pairs:
             print(f"- {pair}")
-
 
 def run_test_cases():
     """
