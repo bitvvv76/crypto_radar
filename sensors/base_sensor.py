@@ -24,13 +24,19 @@ class SensorResult:
     def to_text(self) -> str:
         flags_text = "\n".join(f"- {flag}" for flag in self.flags) if self.flags else "- нет"
 
+        status_ru = {
+            "ok": "норма",
+            "warning": "предупреждение",
+            "reject": "отказ",
+        }.get(self.status, "неизвестно")
+
         return (
-            f"PAIR: {self.pair}\n"
-            f"SENSOR: {self.sensor}\n"
-            f"STATUS: {self.status}\n"
-            f"FLAGS:\n{flags_text}\n"
-            f"RISK COMMENT:\n{self.risk_comment}\n"
-            f"RECOMMENDATION:\n{self.recommendation}"
+            f"ПАРА / PAIR: {self.pair}\n"
+            f"СЕНСОР / SENSOR: {self.sensor}\n"
+            f"СТАТУС / STATUS: {status_ru} / {self.status}\n"
+            f"ФЛАГИ / FLAGS:\n{flags_text}\n"
+            f"РИСК-КОММЕНТАРИЙ / RISK COMMENT:\n{self.risk_comment}\n"
+            f"РЕКОМЕНДАЦИЯ / RECOMMENDATION:\n{self.recommendation}"
         )
 
 
