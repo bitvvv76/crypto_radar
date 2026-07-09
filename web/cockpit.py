@@ -44,6 +44,20 @@ TEXTS = {
         "new_price": "Новая цена",
         "change_percent": "Изменение %",
         "checked_at": "Время проверки",
+        "watchlist": "Watchlist / Список наблюдения",
+        "watchlist_unavailable": "Источник watchlist не найден в локальной БД",
+        "watchlist_unavailable_note": "Это нормально для локальной разработки. На VPS/боевой базе watchlist может существовать.",
+        "watchlist_total": "Всего в watchlist",
+        "watchlist_watching": "Наблюдаем",
+        "watchlist_confirmed": "Подтверждено",
+        "watchlist_rejected": "Отклонено",
+        "watchlist_archived": "Архив",
+        "watchlist_data_missing": "Нет свежих данных",
+        "latest_watchlist": "Последние элементы watchlist",
+        "watchlist_id": "Watchlist ID",
+        "note_column": "Заметка",
+        "added_at": "Добавлена",
+        "updated_at": "Обновлена",
         "note": "v0.1: только чтение из SQLite. Без записи в БД, без OpenAI API, без автоторговли, без реальных денег.",
         "ok": "норма",
         "warning": "предупреждение",
@@ -84,6 +98,20 @@ TEXTS = {
         "new_price": "New Price",
         "change_percent": "Change %",
         "checked_at": "Checked At",
+        "watchlist": "Watchlist",
+        "watchlist_unavailable": "Watchlist source not found in local DB",
+        "watchlist_unavailable_note": "This is normal for local development. The VPS/production DB may contain watchlist data.",
+        "watchlist_total": "Total Watchlist",
+        "watchlist_watching": "Watching",
+        "watchlist_confirmed": "Confirmed",
+        "watchlist_rejected": "Rejected",
+        "watchlist_archived": "Archived",
+        "watchlist_data_missing": "Data Missing",
+        "latest_watchlist": "Latest Watchlist Items",
+        "watchlist_id": "Watchlist ID",
+        "note_column": "Note",
+        "added_at": "Added At",
+        "updated_at": "Updated At",
         "note": "v0.1: read-only SQLite mode. No DB writes, no OpenAI API, no autotrading, no real money.",
         "ok": "ok",
         "warning": "warning",
@@ -304,6 +332,129 @@ def load_latest_checks(limit: int = 10) -> list[dict]:
     finally:
         conn.close()
 
+def table_exists(table_name: str) -> bool:
+    """
+    Проверяет наличие таблицы в локальной SQLite-базе.
+
+    Только чтение.
+    """
+
+    conn = sqlite3.connect(DB_PATH)
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = ?
+            LIMIT 1
+            """,
+            (table_name,),
+        )
+
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def load_watchlist_stats() -> dict:
+    """
+    Загружает read-only статистику watchlist.
+
+    Если таблицы watchlist нет в локальной БД,
+    возвращает статус unavailable.
+    """
+
+    if not table_exists("watchlist"):
+        return {
+            "available": False,
+            "total": 0,
+            "watching": 0,
+            "confirmed": 0,
+            "rejected": 0,
+            "archived": 0,
+            "data_missing": 0,
+        }
+
+    conn = sqlite3.connect(DB_PATH)
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*) FROM watchlist")
+        total = cur.fetchone()[0]
+
+        status_counts = {
+            "watching": 0,
+            "confirmed": 0,
+            "rejected": 0,
+            "archived": 0,
+            "data_missing": 0,
+        }
+
+        cur.execute("""
+            SELECT status, COUNT(*)
+            FROM watchlist
+            GROUP BY status
+        """)
+
+        for status, count in cur.fetchall():
+            if status in status_counts:
+                status_counts[status] = count
+
+        return {
+            "available": True,
+            "total": total,
+            **status_counts,
+        }
+    finally:
+        conn.close()
+
+
+def load_watchlist_items(limit: int = 10) -> list[dict]:
+    """
+    Загружает последние элементы watchlist.
+
+    Только чтение.
+    Если таблицы watchlist нет, возвращает пустой список.
+    """
+
+    if not table_exists("watchlist"):
+        return []
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                w.id AS watchlist_id,
+                w.pair_id,
+                p.pair_symbol,
+                p.chain_id,
+                p.dex_id,
+                p.final_score,
+                p.risk_score,
+                w.status,
+                w.note,
+                w.added_at,
+                w.updated_at
+            FROM watchlist w
+            LEFT JOIN pairs p ON p.id = w.pair_id
+            ORDER BY w.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
 
 def get_sensor_status(idea: dict) -> str:
     """
@@ -506,6 +657,8 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     stats = load_dashboard_stats()
     checks_stats = load_checks_stats()
     latest_checks = load_latest_checks(limit=10)
+    watchlist_stats = load_watchlist_stats()
+    watchlist_items = load_watchlist_items(limit=10)
     ideas = load_last_ideas(limit=20)
     cards_html = f"""
     <div class="cards">
@@ -552,6 +705,45 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
     </div>
     """
+    if watchlist_stats["available"]:
+        watchlist_cards_html = f"""
+        <h2 class="section-title">{texts["watchlist"]}</h2>
+        <div class="cards">
+            <div class="card">
+                <div class="card-title">{texts["watchlist_total"]}</div>
+                <div class="card-value">{watchlist_stats["total"]}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">{texts["watchlist_watching"]}</div>
+                <div class="card-value">{watchlist_stats["watching"]}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">{texts["watchlist_confirmed"]}</div>
+                <div class="card-value">{watchlist_stats["confirmed"]}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">{texts["watchlist_rejected"]}</div>
+                <div class="card-value">{watchlist_stats["rejected"]}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">{texts["watchlist_archived"]}</div>
+                <div class="card-value">{watchlist_stats["archived"]}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">{texts["watchlist_data_missing"]}</div>
+                <div class="card-value">{watchlist_stats["data_missing"]}</div>
+            </div>
+        </div>
+        """
+    else:
+        watchlist_cards_html = f"""
+        <h2 class="section-title">{texts["watchlist"]}</h2>
+        <div class="card">
+            <div class="card-title">{texts["watchlist_unavailable"]}</div>
+            <div class="note">{texts["watchlist_unavailable_note"]}</div>
+        </div>
+        """
+
     rows = []
 
     for idea in ideas:
@@ -670,6 +862,56 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     </div>
     """
 
+    watchlist_rows = []
+
+    for item in watchlist_items:
+        watchlist_rows.append(
+            f"""
+            <tr>
+                <td>{item.get("watchlist_id") or ""}</td>
+                <td>{item.get("pair_id") or ""}</td>
+                <td>{html.escape(str(item.get("pair_symbol") or ""))}</td>
+                <td>{html.escape(str(item.get("chain_id") or ""))}</td>
+                <td>{html.escape(str(item.get("dex_id") or ""))}</td>
+                <td>{format_number(item.get("final_score"))}</td>
+                <td>{format_number(item.get("risk_score"))}</td>
+                <td>{html.escape(str(item.get("status") or ""))}</td>
+                <td>{html.escape(str(item.get("note") or ""))}</td>
+                <td>{html.escape(str(item.get("added_at") or ""))}</td>
+                <td>{html.escape(str(item.get("updated_at") or ""))}</td>
+            </tr>
+            """
+        )
+
+    if watchlist_stats["available"] and watchlist_rows:
+        latest_watchlist_html = f"""
+        <h2 class="section-title">{texts["latest_watchlist"]}</h2>
+        <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>{texts["watchlist_id"]}</th>
+                    <th>{texts["id"]}</th>
+                    <th>{texts["pair"]}</th>
+                    <th>{texts["chain"]}</th>
+                    <th>{texts["dex"]}</th>
+                    <th>{texts["final_score"]}</th>
+                    <th>{texts["risk_score"]}</th>
+                    <th>{texts["sensor_status"]}</th>
+                    <th>{texts["note_column"]}</th>
+                    <th>{texts["added_at"]}</th>
+                    <th>{texts["updated_at"]}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(watchlist_rows)}
+            </tbody>
+        </table>
+        </div>
+        """
+    else:
+        latest_watchlist_html = ""
+
     idea_card_html = ""
 
     if selected_idea:
@@ -695,8 +937,10 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     return render_page(
         cards_html
         + checks_cards_html
+        + watchlist_cards_html
         + checks_by_period_html
         + latest_checks_html
+        + latest_watchlist_html
         + idea_card_html
         + table_html,
         lang=lang,
