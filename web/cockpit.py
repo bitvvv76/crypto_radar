@@ -8,6 +8,59 @@ DB_PATH = "crypto_radar.db"
 HOST = "127.0.0.1"
 PORT = 8080
 
+TEXTS = {
+    "ru": {
+        "title": "Crypto Radar Cockpit v0.1",
+        "subtitle": "Read-only панель / только просмотр данных",
+        "language_ru": "Русский",
+        "language_en": "English",
+        "total_ideas": "Всего идей",
+        "strong_ideas": "Score ≥ 70",
+        "weak_ideas": "Score < 70",
+        "idea_card": "Карточка идеи",
+        "last_ideas": "Последние идеи",
+        "id": "ID",
+        "pair": "Пара",
+        "chain": "Сеть",
+        "dex": "DEX",
+        "final_score": "Итоговая оценка",
+        "risk_score": "Риск",
+        "liquidity_usd": "Ликвидность USD",
+        "volume_24h": "Объём 24ч",
+        "change_24h": "Изменение 24ч",
+        "sensor_status": "Статус сенсора",
+        "note": "v0.1: только чтение из SQLite. Без записи в БД, без OpenAI API, без автоторговли, без реальных денег.",
+        "ok": "норма",
+        "warning": "предупреждение",
+        "reject": "отказ",
+    },
+    "en": {
+        "title": "Crypto Radar Cockpit v0.1",
+        "subtitle": "Read-only panel / data view only",
+        "language_ru": "Русский",
+        "language_en": "English",
+        "total_ideas": "Total Ideas",
+        "strong_ideas": "Score ≥ 70",
+        "weak_ideas": "Score < 70",
+        "idea_card": "Idea Card",
+        "last_ideas": "Last Ideas",
+        "id": "ID",
+        "pair": "Pair",
+        "chain": "Chain",
+        "dex": "DEX",
+        "final_score": "Final Score",
+        "risk_score": "Risk Score",
+        "liquidity_usd": "Liquidity USD",
+        "volume_24h": "Volume 24h",
+        "change_24h": "Change 24h",
+        "sensor_status": "Sensor Status",
+        "note": "v0.1: read-only SQLite mode. No DB writes, no OpenAI API, no autotrading, no real money.",
+        "ok": "ok",
+        "warning": "warning",
+        "reject": "reject",
+    },
+}
+
 
 def load_dashboard_stats() -> dict:
     """
@@ -159,15 +212,33 @@ def format_number(value) -> str:
         return f"{float(value):,.2f}"
     except (TypeError, ValueError):
         return html.escape(str(value))
+    
+def normalize_lang(value: str | None) -> str:
+    if value == "en":
+        return "en"
+
+    return "ru"
 
 
-def render_page(content: str) -> str:
+def status_text(status: str, lang: str) -> str:
+    texts = TEXTS[lang]
+    label = texts.get(status, status)
+
+    if lang == "ru":
+        return f"{label} / {status}"
+
+    return status
+
+
+def render_page(content: str, lang: str) -> str:
+    texts = TEXTS[lang]
+
     return f"""
 <!doctype html>
-<html lang="ru">
+<html lang="{lang}">
 <head>
     <meta charset="utf-8">
-    <title>Crypto Radar Cockpit v0.1</title>
+    <title>{texts["title"]}</title>
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -188,6 +259,13 @@ def render_page(content: str) -> str:
         .subtitle {{
             color: #9ca3af;
             margin-top: 6px;
+        }}
+        .language-switch {{
+            margin-top: 12px;
+            font-size: 14px;
+        }}
+        .language-switch a {{
+            margin-right: 12px;
         }}
         main {{
             padding: 24px 32px;
@@ -267,13 +345,17 @@ def render_page(content: str) -> str:
 </head>
 <body>
     <header>
-        <h1>Crypto Radar Cockpit v0.1</h1>
-        <div class="subtitle">Read-only панель / только просмотр данных</div>
+        <h1>{texts["title"]}</h1>
+        <div class="subtitle">{texts["subtitle"]}</div>
+        <div class="language-switch">
+            <a href="/?lang=ru">{texts["language_ru"]}</a>
+            <a href="/?lang=en">{texts["language_en"]}</a>
+        </div>
     </header>
     <main>
         {content}
         <div class="note">
-            v0.1: только чтение из SQLite. Без записи в БД, без OpenAI API, без автоторговли, без реальных денег.
+            {texts["note"]}
         </div>
     </main>
 </body>
@@ -281,22 +363,23 @@ def render_page(content: str) -> str:
 """
 
 
-def render_dashboard(selected_idea: dict | None = None) -> str:
+def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str:
+    texts = TEXTS[lang]
     stats = load_dashboard_stats()
     ideas = load_last_ideas(limit=20)
 
     cards_html = f"""
     <div class="cards">
         <div class="card">
-            <div class="card-title">Всего идей / Total Ideas</div>
+            <div class="card-title">{texts["total_ideas"]}</div>
             <div class="card-value">{stats["total_ideas"]}</div>
         </div>
         <div class="card">
-            <div class="card-title">Score ≥ 70</div>
+            <div class="card-title">{texts["strong_ideas"]}</div>
             <div class="card-value">{stats["strong_ideas"]}</div>
         </div>
         <div class="card">
-            <div class="card-title">Score &lt; 70</div>
+            <div class="card-title">{texts["weak_ideas"]}</div>
             <div class="card-value">{stats["weak_ideas"]}</div>
         </div>
     </div>
@@ -313,7 +396,7 @@ def render_dashboard(selected_idea: dict | None = None) -> str:
         rows.append(
             f"""
             <tr>
-                <td><a href="/?id={idea_id}">{idea_id}</a></td>
+                <td><a href="/?id={idea_id}&lang={lang}">{idea_id}</a></td>
                 <td>{pair}</td>
                 <td>{html.escape(str(idea.get("chain_id") or "—"))}</td>
                 <td>{html.escape(str(idea.get("dex_id") or "—"))}</td>
@@ -322,27 +405,27 @@ def render_dashboard(selected_idea: dict | None = None) -> str:
                 <td>{format_number(idea.get("liquidity_usd"))}</td>
                 <td>{format_number(idea.get("volume_24h"))}</td>
                 <td>{format_number(idea.get("price_change_24h"))}%</td>
-                <td class="{status_class}">{status}</td>
+                <td class="{status_class}">{status_text(status, lang)}</td>
             </tr>
             """
         )
 
     table_html = f"""
-    <h2 class="section-title">Last Ideas / Последние идеи</h2>
+    <h2 class="section-title">{texts["last_ideas"]}</h2>
     <div class="table-wrap">
     <table>
         <thead>
             <tr>
-                <th>ID</th>
-                <th>Pair</th>
-                <th>Chain</th>
-                <th>DEX</th>
-                <th>Final Score</th>
-                <th>Risk Score</th>
-                <th>Liquidity USD</th>
-                <th>Volume 24h</th>
-                <th>Change 24h</th>
-                <th>Sensor Status</th>
+                <th>{texts["id"]}</th>
+                <th>{texts["pair"]}</th>
+                <th>{texts["chain"]}</th>
+                <th>{texts["dex"]}</th>
+                <th>{texts["final_score"]}</th>
+                <th>{texts["risk_score"]}</th>
+                <th>{texts["liquidity_usd"]}</th>
+                <th>{texts["volume_24h"]}</th>
+                <th>{texts["change_24h"]}</th>
+                <th>{texts["sensor_status"]}</th>
             </tr>
         </thead>
         <tbody>
@@ -359,28 +442,30 @@ def render_dashboard(selected_idea: dict | None = None) -> str:
         status_class = f"status-{status}"
 
         idea_card_html = f"""
-        <h2 class="section-title">Idea Card / Карточка идеи</h2>
+        <h2 class="section-title">{texts["idea_card"]}</h2>
         <div class="card">
-            <div><b>ID:</b> {selected_idea.get("id")}</div>
-            <div><b>Pair:</b> {html.escape(str(selected_idea.get("pair_symbol") or "UNKNOWN"))}</div>
-            <div><b>Chain:</b> {html.escape(str(selected_idea.get("chain_id") or "—"))}</div>
-            <div><b>DEX:</b> {html.escape(str(selected_idea.get("dex_id") or "—"))}</div>
-            <div><b>Final Score:</b> {format_number(selected_idea.get("final_score"))}</div>
-            <div><b>Risk Score:</b> {format_number(selected_idea.get("risk_score"))}</div>
-            <div><b>Liquidity USD:</b> {format_number(selected_idea.get("liquidity_usd"))}</div>
-            <div><b>Volume 24h:</b> {format_number(selected_idea.get("volume_24h"))}</div>
-            <div><b>Price Change 24h:</b> {format_number(selected_idea.get("price_change_24h"))}%</div>
-            <div><b>Sensor Status:</b> <span class="{status_class}">{status}</span></div>
+            <div><b>{texts["id"]}:</b> {selected_idea.get("id")}</div>
+            <div><b>{texts["pair"]}:</b> {html.escape(str(selected_idea.get("pair_symbol") or "UNKNOWN"))}</div>
+            <div><b>{texts["chain"]}:</b> {html.escape(str(selected_idea.get("chain_id") or "—"))}</div>
+            <div><b>{texts["dex"]}:</b> {html.escape(str(selected_idea.get("dex_id") or "—"))}</div>
+            <div><b>{texts["final_score"]}:</b> {format_number(selected_idea.get("final_score"))}</div>
+            <div><b>{texts["risk_score"]}:</b> {format_number(selected_idea.get("risk_score"))}</div>
+            <div><b>{texts["liquidity_usd"]}:</b> {format_number(selected_idea.get("liquidity_usd"))}</div>
+            <div><b>{texts["volume_24h"]}:</b> {format_number(selected_idea.get("volume_24h"))}</div>
+            <div><b>{texts["change_24h"]}:</b> {format_number(selected_idea.get("price_change_24h"))}%</div>
+            <div><b>{texts["sensor_status"]}:</b> <span class="{status_class}">{status_text(status, lang)}</span></div>
         </div>
         """
 
-    return render_page(cards_html + idea_card_html + table_html)
+    return render_page(cards_html + idea_card_html + table_html, lang=lang)
 
 
 class CockpitHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_url = urlparse(self.path)
         query = parse_qs(parsed_url.query)
+
+        lang = normalize_lang(query.get("lang", ["ru"])[0])
 
         selected_idea = None
 
@@ -391,13 +476,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 selected_idea = None
 
-        content = render_dashboard(selected_idea=selected_idea)
+        content = render_dashboard(selected_idea=selected_idea, lang=lang)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(content.encode("utf-8"))
-
 
 def main():
     server = HTTPServer((HOST, PORT), CockpitHandler)
