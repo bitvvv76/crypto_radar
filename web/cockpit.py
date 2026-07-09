@@ -29,6 +29,21 @@ TEXTS = {
         "volume_24h": "Объём 24ч",
         "change_24h": "Изменение 24ч",
         "sensor_status": "Статус сенсора",
+        "checks_statistics": "Проверки / Статистика",
+        "total_checks": "Всего проверок",
+        "positive_checks": "Положительные",
+        "negative_checks": "Отрицательные",
+        "avg_change": "Среднее изменение",
+        "best_change": "Лучший результат",
+        "worst_change": "Худший результат",
+        "checks_by_period": "Проверки по периодам",
+        "latest_checks": "Последние проверки",
+        "period": "Период",
+        "count": "Количество",
+        "old_price": "Старая цена",
+        "new_price": "Новая цена",
+        "change_percent": "Изменение %",
+        "checked_at": "Время проверки",
         "note": "v0.1: только чтение из SQLite. Без записи в БД, без OpenAI API, без автоторговли, без реальных денег.",
         "ok": "норма",
         "warning": "предупреждение",
@@ -54,6 +69,21 @@ TEXTS = {
         "volume_24h": "Volume 24h",
         "change_24h": "Change 24h",
         "sensor_status": "Sensor Status",
+        "checks_statistics": "Checks / Statistics",
+        "total_checks": "Total Checks",
+        "positive_checks": "Positive",
+        "negative_checks": "Negative",
+        "avg_change": "Average Change",
+        "best_change": "Best Change",
+        "worst_change": "Worst Change",
+        "checks_by_period": "Checks by Period",
+        "latest_checks": "Latest Checks",
+        "period": "Period",
+        "count": "Count",
+        "old_price": "Old Price",
+        "new_price": "New Price",
+        "change_percent": "Change %",
+        "checked_at": "Checked At",
         "note": "v0.1: read-only SQLite mode. No DB writes, no OpenAI API, no autotrading, no real money.",
         "ok": "ok",
         "warning": "warning",
@@ -163,6 +193,114 @@ def load_idea(idea_id: int) -> dict:
 
         row = cur.fetchone()
         return dict(row) if row else {}
+    finally:
+        conn.close()
+
+def load_checks_stats() -> dict:
+    """
+    Загружает read-only статистику проверок price_checks.
+
+    Только чтение.
+    Без записи в БД.
+    Без изменения структуры БД.
+    """
+
+    conn = sqlite3.connect(DB_PATH)
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*) FROM price_checks")
+        total_checks = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM price_checks
+            WHERE price_change_percent > 0
+        """)
+        positive_checks = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM price_checks
+            WHERE price_change_percent < 0
+        """)
+        negative_checks = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT AVG(price_change_percent)
+            FROM price_checks
+            WHERE price_change_percent IS NOT NULL
+        """)
+        avg_change = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT MAX(price_change_percent)
+            FROM price_checks
+            WHERE price_change_percent IS NOT NULL
+        """)
+        best_change = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT MIN(price_change_percent)
+            FROM price_checks
+            WHERE price_change_percent IS NOT NULL
+        """)
+        worst_change = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT check_period, COUNT(*)
+            FROM price_checks
+            GROUP BY check_period
+            ORDER BY check_period
+        """)
+        by_period = cur.fetchall()
+
+        return {
+            "total_checks": total_checks,
+            "positive_checks": positive_checks,
+            "negative_checks": negative_checks,
+            "avg_change": avg_change,
+            "best_change": best_change,
+            "worst_change": worst_change,
+            "by_period": by_period,
+        }
+    finally:
+        conn.close()
+
+
+def load_latest_checks(limit: int = 10) -> list[dict]:
+    """
+    Загружает последние проверки для Cockpit.
+
+    Только чтение.
+    """
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                pc.id,
+                pc.pair_id,
+                p.pair_symbol,
+                pc.check_period,
+                pc.old_price_usd,
+                pc.new_price_usd,
+                pc.price_change_percent,
+                pc.checked_at
+            FROM price_checks pc
+            LEFT JOIN pairs p ON p.id = pc.pair_id
+            ORDER BY pc.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
 
@@ -366,8 +504,9 @@ def render_page(content: str, lang: str) -> str:
 def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str:
     texts = TEXTS[lang]
     stats = load_dashboard_stats()
+    checks_stats = load_checks_stats()
+    latest_checks = load_latest_checks(limit=10)
     ideas = load_last_ideas(limit=20)
-
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -384,7 +523,35 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
     </div>
     """
-
+    checks_cards_html = f"""
+    <h2 class="section-title">{texts["checks_statistics"]}</h2>
+    <div class="cards">
+        <div class="card">
+            <div class="card-title">{texts["total_checks"]}</div>
+            <div class="card-value">{checks_stats["total_checks"]}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["positive_checks"]}</div>
+            <div class="card-value">{checks_stats["positive_checks"]}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["negative_checks"]}</div>
+            <div class="card-value">{checks_stats["negative_checks"]}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["avg_change"]}</div>
+            <div class="card-value">{format_number(checks_stats["avg_change"])}%</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["best_change"]}</div>
+            <div class="card-value">{format_number(checks_stats["best_change"])}%</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["worst_change"]}</div>
+            <div class="card-value">{format_number(checks_stats["worst_change"])}%</div>
+        </div>
+    </div>
+    """
     rows = []
 
     for idea in ideas:
@@ -435,6 +602,74 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     </div>
     """
 
+    period_rows = []
+
+    for period, count in checks_stats["by_period"]:
+        period_rows.append(
+            f"""
+            <tr>
+                <td>{html.escape(str(period))}</td>
+                <td>{count}</td>
+            </tr>
+            """
+        )
+
+    checks_by_period_html = f"""
+    <h2 class="section-title">{texts["checks_by_period"]}</h2>
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>{texts["period"]}</th>
+                <th>{texts["count"]}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {''.join(period_rows)}
+        </tbody>
+    </table>
+    </div>
+    """
+
+    check_rows = []
+
+    for check in latest_checks:
+        check_rows.append(
+            f"""
+            <tr>
+                <td>{check.get("id")}</td>
+                <td>{html.escape(str(check.get("pair_symbol") or "UNKNOWN"))}</td>
+                <td>{html.escape(str(check.get("check_period") or "—"))}</td>
+                <td>{format_number(check.get("old_price_usd"))}</td>
+                <td>{format_number(check.get("new_price_usd"))}</td>
+                <td>{format_number(check.get("price_change_percent"))}%</td>
+                <td>{html.escape(str(check.get("checked_at") or "—"))}</td>
+            </tr>
+            """
+        )
+
+    latest_checks_html = f"""
+    <h2 class="section-title">{texts["latest_checks"]}</h2>
+    <div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>{texts["id"]}</th>
+                <th>{texts["pair"]}</th>
+                <th>{texts["period"]}</th>
+                <th>{texts["old_price"]}</th>
+                <th>{texts["new_price"]}</th>
+                <th>{texts["change_percent"]}</th>
+                <th>{texts["checked_at"]}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {''.join(check_rows)}
+        </tbody>
+    </table>
+    </div>
+    """
+
     idea_card_html = ""
 
     if selected_idea:
@@ -457,7 +692,15 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
         """
 
-    return render_page(cards_html + idea_card_html + table_html, lang=lang)
+    return render_page(
+        cards_html
+        + checks_cards_html
+        + checks_by_period_html
+        + latest_checks_html
+        + idea_card_html
+        + table_html,
+        lang=lang,
+    )
 
 
 class CockpitHandler(BaseHTTPRequestHandler):
