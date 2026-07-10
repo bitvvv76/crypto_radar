@@ -18,6 +18,20 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Карточка идеи",
+        "anti_scam": "Anti-Scam / Rug Pull Radar v0.1",
+        "anti_scam_summary": "Антискам-оценка",
+        "anti_scam_level": "Уровень риска",
+        "anti_scam_reasons": "Причины",
+        "anti_scam_note": "Это read-only антискам-оценка на базе уже имеющихся данных Cockpit. Внешние API не используются.",
+        "anti_scam_low": "Низкий риск",
+        "anti_scam_medium": "Повышенное внимание",
+        "anti_scam_high": "Высокий риск",
+        "anti_scam_reason_bad_pair": "Пара похожа на обёрнутый/базовый актив, возможна нерелевантная идея.",
+        "anti_scam_reason_low_score": "Итоговая оценка ниже безопасного порога.",
+        "anti_scam_reason_low_liquidity": "Ликвидность низкая, выше риск проскальзывания и манипуляций.",
+        "anti_scam_reason_low_volume": "Объём торгов слабый, сигнал менее надёжен.",
+        "anti_scam_reason_overheated": "Сильный рост за 24ч может указывать на перегрев.",
+        "anti_scam_reason_ok": "Явных антискам-флагов по базовым полям не найдено.",
         "paper_portfolio": "Paper Portfolio v0.1",
         "paper_preview": "Модельный портфель / Preview",
         "paper_entry_price": "Условная цена входа",
@@ -105,6 +119,20 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Idea Card",
+        "anti_scam": "Anti-Scam / Rug Pull Radar v0.1",
+        "anti_scam_summary": "Anti-Scam Assessment",
+        "anti_scam_level": "Risk Level",
+        "anti_scam_reasons": "Reasons",
+        "anti_scam_note": "This is a read-only anti-scam assessment based on existing Cockpit data. External APIs are not used.",
+        "anti_scam_low": "Low Risk",
+        "anti_scam_medium": "Watch Carefully",
+        "anti_scam_high": "High Risk",
+        "anti_scam_reason_bad_pair": "The pair looks like a wrapped/base asset and may be an irrelevant idea.",
+        "anti_scam_reason_low_score": "The final score is below the safe threshold.",
+        "anti_scam_reason_low_liquidity": "Liquidity is low, increasing slippage and manipulation risk.",
+        "anti_scam_reason_low_volume": "Trading volume is weak, making the signal less reliable.",
+        "anti_scam_reason_overheated": "A strong 24h move may indicate overheating.",
+        "anti_scam_reason_ok": "No obvious anti-scam flags were found in the basic fields.",
         "paper_portfolio": "Paper Portfolio v0.1",
         "paper_preview": "Paper Portfolio Preview",
         "paper_entry_price": "Model Entry Price",
@@ -648,6 +676,66 @@ def normalize_lang(value: str | None) -> str:
         return "en"
 
     return "ru"
+
+def build_anti_scam_assessment(idea: dict, lang: str) -> dict:
+    """
+    Формирует первый read-only слой Anti-Scam / Rug Pull Radar v0.1.
+
+    Без записи в БД.
+    Без изменения структуры БД.
+    Без внешних API.
+    Только на базе уже имеющихся данных Cockpit.
+    """
+
+    texts = TEXTS[lang]
+
+    pair = str(idea.get("pair_symbol") or "").upper()
+    final_score = idea.get("final_score") or 0
+    liquidity_usd = idea.get("liquidity_usd") or 0
+    volume_24h = idea.get("volume_24h") or 0
+    price_change_24h = idea.get("price_change_24h") or 0
+
+    reasons = []
+    risk_points = 0
+
+    bad_prefixes = ("WETH/", "WBTC/", "USDC/", "USDT/", "DAI/")
+
+    if pair.startswith(bad_prefixes):
+        reasons.append(texts["anti_scam_reason_bad_pair"])
+        risk_points += 3
+
+    if final_score < 70:
+        reasons.append(texts["anti_scam_reason_low_score"])
+        risk_points += 3
+
+    if liquidity_usd < 50_000:
+        reasons.append(texts["anti_scam_reason_low_liquidity"])
+        risk_points += 2
+
+    if volume_24h < 10_000:
+        reasons.append(texts["anti_scam_reason_low_volume"])
+        risk_points += 1
+
+    if price_change_24h > 30:
+        reasons.append(texts["anti_scam_reason_overheated"])
+        risk_points += 1
+
+    if not reasons:
+        reasons.append(texts["anti_scam_reason_ok"])
+
+    if risk_points >= 4:
+        level = texts["anti_scam_high"]
+    elif risk_points >= 1:
+        level = texts["anti_scam_medium"]
+    else:
+        level = texts["anti_scam_low"]
+
+    return {
+        "level": level,
+        "reasons": reasons,
+        "risk_points": risk_points,
+    }
+
 def build_paper_portfolio_preview(idea: dict, latest_check: dict, lang: str) -> dict:
     """
     Формирует первый read-only preview для Paper Portfolio v0.1.
@@ -1166,6 +1254,11 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         status = get_sensor_status(selected_idea)
         status_class = f"status-{status}"
         dossier = build_ai_dossier(selected_idea, lang)
+        anti_scam = build_anti_scam_assessment(selected_idea, lang)
+        anti_scam_reasons_html = "".join(
+            f"<li>{html.escape(reason)}</li>"
+            for reason in anti_scam["reasons"]
+        )
         latest_check = load_latest_check_for_idea(selected_idea["id"])
         paper_preview = build_paper_portfolio_preview(
             selected_idea,
@@ -1187,6 +1280,15 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div><b>{texts["volume_24h"]}:</b> {format_number(selected_idea.get("volume_24h"))}</div>
             <div><b>{texts["change_24h"]}:</b> {format_number(selected_idea.get("price_change_24h"))}%</div>
             <div><b>{texts["sensor_status"]}:</b> <span class="{status_class}">{status_text(status, lang)}</span></div>
+            <hr>
+            <h3>{texts["anti_scam"]}</h3>
+            <div><b>{texts["anti_scam_summary"]}:</b></div>
+            <div><b>{texts["anti_scam_level"]}:</b> {html.escape(str(anti_scam["level"]))}</div>
+            <div><b>{texts["anti_scam_reasons"]}:</b></div>
+            <ul>
+                {anti_scam_reasons_html}
+            </ul>
+            <div class="note">{texts["anti_scam_note"]}</div>
             <hr>
             <h3>{texts["ai_dossier"]}</h3>
             <div><b>{texts["dossier_summary"]}:</b></div>
