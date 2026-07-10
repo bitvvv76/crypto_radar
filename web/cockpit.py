@@ -18,6 +18,12 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Карточка идеи",
+        "smart_wallet": "Smart Wallet Radar v0.1",
+        "smart_wallet_summary": "Smart wallet оценка",
+        "smart_wallet_status": "Статус источника",
+        "smart_wallet_status_missing": "Источник smart wallet данных пока не подключён",
+        "smart_wallet_note": "Это read-only shell/fallback. On-chain источники и внешние API не используются.",
+        "smart_wallet_next_step": "Следующий шаг: отдельно обсудить подключение Etherscan / Basescan / Solscan / BscScan.",
         "anti_scam": "Anti-Scam / Rug Pull Radar v0.1",
         "anti_scam_summary": "Антискам-оценка",
         "anti_scam_level": "Уровень риска",
@@ -119,6 +125,12 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Idea Card",
+        "smart_wallet": "Smart Wallet Radar v0.1",
+        "smart_wallet_summary": "Smart Wallet Assessment",
+        "smart_wallet_status": "Source Status",
+        "smart_wallet_status_missing": "Smart wallet data source is not connected yet",
+        "smart_wallet_note": "This is a read-only shell/fallback. On-chain sources and external APIs are not used.",
+        "smart_wallet_next_step": "Next step: discuss Etherscan / Basescan / Solscan / BscScan integration separately.",
         "anti_scam": "Anti-Scam / Rug Pull Radar v0.1",
         "anti_scam_summary": "Anti-Scam Assessment",
         "anti_scam_level": "Risk Level",
@@ -676,6 +688,25 @@ def normalize_lang(value: str | None) -> str:
         return "en"
 
     return "ru"
+
+def build_smart_wallet_radar(idea: dict, lang: str) -> dict:
+    """
+    Формирует первый read-only shell/fallback для Smart Wallet Radar v0.1.
+
+    Без записи в БД.
+    Без изменения структуры БД.
+    Без внешних API.
+    Без on-chain подключений.
+    """
+
+    texts = TEXTS[lang]
+
+    return {
+        "available": False,
+        "status": texts["smart_wallet_status_missing"],
+        "note": texts["smart_wallet_note"],
+        "next_step": texts["smart_wallet_next_step"],
+    }
 
 def build_anti_scam_assessment(idea: dict, lang: str) -> dict:
     """
@@ -1254,6 +1285,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         status = get_sensor_status(selected_idea)
         status_class = f"status-{status}"
         dossier = build_ai_dossier(selected_idea, lang)
+        smart_wallet = build_smart_wallet_radar(selected_idea, lang)
         anti_scam = build_anti_scam_assessment(selected_idea, lang)
         anti_scam_reasons_html = "".join(
             f"<li>{html.escape(reason)}</li>"
@@ -1280,6 +1312,12 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div><b>{texts["volume_24h"]}:</b> {format_number(selected_idea.get("volume_24h"))}</div>
             <div><b>{texts["change_24h"]}:</b> {format_number(selected_idea.get("price_change_24h"))}%</div>
             <div><b>{texts["sensor_status"]}:</b> <span class="{status_class}">{status_text(status, lang)}</span></div>
+            <hr>
+            <h3>{texts["smart_wallet"]}</h3>
+            <div><b>{texts["smart_wallet_summary"]}:</b></div>
+            <div><b>{texts["smart_wallet_status"]}:</b> {html.escape(str(smart_wallet["status"]))}</div>
+            <div class="note">{html.escape(str(smart_wallet["note"]))}</div>
+            <div class="note">{html.escape(str(smart_wallet["next_step"]))}</div>
             <hr>
             <h3>{texts["anti_scam"]}</h3>
             <div><b>{texts["anti_scam_summary"]}:</b></div>
