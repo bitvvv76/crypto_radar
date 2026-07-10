@@ -44,6 +44,13 @@ TEXTS = {
         "new_price": "Новая цена",
         "change_percent": "Изменение %",
         "checked_at": "Время проверки",
+        "data_source": "Источник данных",
+        "source_type": "Тип источника",
+        "database_path": "Путь к базе",
+        "last_idea": "Последняя идея",
+        "last_check": "Последняя проверка",
+        "freshness_warning": "Внимание: Cockpit читает локальную SQLite-базу. Данные могут отличаться от боевой VPS-базы.",
+        "freshness_note": "Старые даты в локальном Cockpit не являются ошибкой, если локальная база не синхронизирована с VPS.",
         "watchlist": "Watchlist / Список наблюдения",
         "watchlist_unavailable": "Источник watchlist не найден в локальной БД",
         "watchlist_unavailable_note": "Это нормально для локальной разработки. На VPS/боевой базе watchlist может существовать.",
@@ -98,6 +105,13 @@ TEXTS = {
         "new_price": "New Price",
         "change_percent": "Change %",
         "checked_at": "Checked At",
+        "data_source": "Data Source",
+        "source_type": "Source Type",
+        "database_path": "Database Path",
+        "last_idea": "Last Idea",
+        "last_check": "Last Check",
+        "freshness_warning": "Warning: Cockpit reads the local SQLite database. Data may differ from the production VPS database.",
+        "freshness_note": "Old dates in the local Cockpit are not an error if the local database is not synchronized with VPS.",
         "watchlist": "Watchlist",
         "watchlist_unavailable": "Watchlist source not found in local DB",
         "watchlist_unavailable_note": "This is normal for local development. The VPS/production DB may contain watchlist data.",
@@ -118,6 +132,44 @@ TEXTS = {
         "reject": "reject",
     },
 }
+
+def load_data_freshness() -> dict:
+    """
+    Загружает read-only информацию об источнике и свежести данных.
+
+    Только чтение.
+    Без записи в БД.
+    Без изменения структуры БД.
+    """
+
+    conn = sqlite3.connect(DB_PATH)
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*) FROM pairs")
+        total_pairs = cur.fetchone()[0]
+
+        cur.execute("SELECT MAX(created_at) FROM pairs")
+        last_pair_created_at = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM price_checks")
+        total_checks = cur.fetchone()[0]
+
+        cur.execute("SELECT MAX(checked_at) FROM price_checks")
+        last_check_checked_at = cur.fetchone()[0]
+
+        return {
+            "data_source": "Local SQLite",
+            "database_path": DB_PATH,
+            "total_pairs": total_pairs,
+            "last_pair_created_at": last_pair_created_at,
+            "total_checks": total_checks,
+            "last_check_checked_at": last_check_checked_at,
+            "is_local": True,
+        }
+    finally:
+        conn.close()
 
 
 def load_dashboard_stats() -> dict:
@@ -654,6 +706,7 @@ def render_page(content: str, lang: str) -> str:
 
 def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str:
     texts = TEXTS[lang]
+    freshness = load_data_freshness()
     stats = load_dashboard_stats()
     checks_stats = load_checks_stats()
     latest_checks = load_latest_checks(limit=10)
@@ -674,6 +727,31 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div class="card-title">{texts["weak_ideas"]}</div>
             <div class="card-value">{stats["weak_ideas"]}</div>
         </div>
+    </div>
+    """
+    freshness_html = f"""
+    <h2 class="section-title">{texts["data_source"]}</h2>
+    <div class="cards">
+        <div class="card">
+            <div class="card-title">{texts["source_type"]}</div>
+            <div class="card-value">{html.escape(str(freshness["data_source"]))}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["database_path"]}</div>
+            <div class="card-value">{html.escape(str(freshness["database_path"]))}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["last_idea"]}</div>
+            <div class="card-value">{html.escape(str(freshness["last_pair_created_at"] or "—"))}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["last_check"]}</div>
+            <div class="card-value">{html.escape(str(freshness["last_check_checked_at"] or "—"))}</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-title">{texts["freshness_warning"]}</div>
+        <div class="note">{texts["freshness_note"]}</div>
     </div>
     """
     checks_cards_html = f"""
@@ -936,6 +1014,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
 
     return render_page(
         cards_html
+        + freshness_html
         + checks_cards_html
         + watchlist_cards_html
         + checks_by_period_html
