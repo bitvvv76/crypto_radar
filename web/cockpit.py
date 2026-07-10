@@ -18,6 +18,15 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Карточка идеи",
+        "paper_portfolio": "Paper Portfolio v0.1",
+        "paper_preview": "Модельный портфель / Preview",
+        "paper_entry_price": "Условная цена входа",
+        "paper_latest_price": "Последняя доступная цена",
+        "paper_result": "Модельный результат",
+        "paper_status": "Статус позиции",
+        "paper_status_preview": "Preview only / без реальной сделки",
+        "paper_note": "Это модельный read-only расчёт без реальных денег, без биржевых API и без записи в БД.",
+        "paper_no_checks": "Для этой идеи пока нет проверок цены.",
         "ai_dossier": "AI Investment Dossier v0.1",
         "dossier_summary": "Краткое досье",
         "dossier_signal": "Сигнал",
@@ -96,6 +105,15 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Idea Card",
+        "paper_portfolio": "Paper Portfolio v0.1",
+        "paper_preview": "Paper Portfolio Preview",
+        "paper_entry_price": "Model Entry Price",
+        "paper_latest_price": "Latest Available Price",
+        "paper_result": "Model Result",
+        "paper_status": "Position Status",
+        "paper_status_preview": "Preview only / no real trade",
+        "paper_note": "This is a read-only paper calculation with no real money, no exchange APIs, and no DB writes.",
+        "paper_no_checks": "There are no price checks for this idea yet.",
         "ai_dossier": "AI Investment Dossier v0.1",
         "dossier_summary": "Brief Dossier",
         "dossier_signal": "Signal",
@@ -418,6 +436,43 @@ def load_latest_checks(limit: int = 10) -> list[dict]:
     finally:
         conn.close()
 
+def load_latest_check_for_idea(pair_id: int) -> dict:
+    """
+    Загружает последнюю проверку цены для конкретной идеи.
+
+    Только чтение.
+    Без записи в БД.
+    Без изменения структуры БД.
+    """
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                id,
+                pair_id,
+                check_period,
+                old_price_usd,
+                new_price_usd,
+                price_change_percent,
+                checked_at
+            FROM price_checks
+            WHERE pair_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (pair_id,),
+        )
+
+        row = cur.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
 def table_exists(table_name: str) -> bool:
     """
     Проверяет наличие таблицы в локальной SQLite-базе.
@@ -593,6 +648,40 @@ def normalize_lang(value: str | None) -> str:
         return "en"
 
     return "ru"
+def build_paper_portfolio_preview(idea: dict, latest_check: dict, lang: str) -> dict:
+    """
+    Формирует первый read-only preview для Paper Portfolio v0.1.
+
+    Без записи в БД.
+    Без изменения структуры БД.
+    Без биржевых API.
+    Без реальных денег.
+    """
+
+    texts = TEXTS[lang]
+
+    entry_price = idea.get("price_usd")
+    latest_price = latest_check.get("new_price_usd")
+    result_percent = latest_check.get("price_change_percent")
+
+    if not latest_check:
+        return {
+            "available": False,
+            "entry_price": entry_price,
+            "latest_price": None,
+            "result_percent": None,
+            "status": texts["paper_status_preview"],
+            "note": texts["paper_no_checks"],
+        }
+
+    return {
+        "available": True,
+        "entry_price": entry_price,
+        "latest_price": latest_price,
+        "result_percent": result_percent,
+        "status": texts["paper_status_preview"],
+        "note": texts["paper_note"],
+    }
 
 def build_ai_dossier(idea: dict, lang: str) -> dict:
     """
@@ -1077,6 +1166,12 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         status = get_sensor_status(selected_idea)
         status_class = f"status-{status}"
         dossier = build_ai_dossier(selected_idea, lang)
+        latest_check = load_latest_check_for_idea(selected_idea["id"])
+        paper_preview = build_paper_portfolio_preview(
+            selected_idea,
+            latest_check,
+            lang,
+        )
         
 
         idea_card_html = f"""
@@ -1100,6 +1195,14 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div><b>{texts["dossier_liquidity"]}:</b> {html.escape(dossier["liquidity"])}</div>
             <div><b>{texts["dossier_activity"]}:</b> {html.escape(dossier["activity"])}</div>
             <div class="note">{texts["dossier_note"]}</div>
+            <hr>
+            <h3>{texts["paper_portfolio"]}</h3>
+            <div><b>{texts["paper_preview"]}:</b></div>
+            <div><b>{texts["paper_entry_price"]}:</b> {format_number(paper_preview["entry_price"])}</div>
+            <div><b>{texts["paper_latest_price"]}:</b> {format_number(paper_preview["latest_price"])}</div>
+            <div><b>{texts["paper_result"]}:</b> {format_number(paper_preview["result_percent"])}%</div>
+            <div><b>{texts["paper_status"]}:</b> {html.escape(str(paper_preview["status"]))}</div>
+            <div class="note">{html.escape(str(paper_preview["note"]))}</div>
         </div>
         """
 
