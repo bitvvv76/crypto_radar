@@ -18,6 +18,23 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Карточка идеи",
+        "ai_dossier": "AI Investment Dossier v0.1",
+        "dossier_summary": "Краткое досье",
+        "dossier_signal": "Сигнал",
+        "dossier_risk": "Риск",
+        "dossier_liquidity": "Ликвидность",
+        "dossier_activity": "Активность",
+        "dossier_note": "Это read-only досье на базе уже имеющихся данных Cockpit. OpenAI API не используется.",
+        "dossier_signal_strong": "Идея выглядит сильной по итоговой оценке.",
+        "dossier_signal_medium": "Идея выглядит умеренной, требуется ручная проверка.",
+        "dossier_signal_weak": "Идея слабая или требует осторожности.",
+        "dossier_risk_low": "Риск по базовым полям выглядит низким.",
+        "dossier_risk_medium": "Есть признаки повышенного риска.",
+        "dossier_risk_high": "Риск высокий, нужна осторожность.",
+        "dossier_liquidity_good": "Ликвидность выглядит достаточной для наблюдения.",
+        "dossier_liquidity_weak": "Ликвидность слабая, возможны проскальзывание и шум.",
+        "dossier_activity_good": "Объём торгов выглядит активным.",
+        "dossier_activity_weak": "Объём торгов слабый, сигнал менее надёжен.",
         "last_ideas": "Последние идеи",
         "id": "ID",
         "pair": "Пара",
@@ -79,6 +96,23 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Idea Card",
+        "ai_dossier": "AI Investment Dossier v0.1",
+        "dossier_summary": "Brief Dossier",
+        "dossier_signal": "Signal",
+        "dossier_risk": "Risk",
+        "dossier_liquidity": "Liquidity",
+        "dossier_activity": "Activity",
+        "dossier_note": "This is a read-only dossier based on existing Cockpit data. OpenAI API is not used.",
+        "dossier_signal_strong": "The idea looks strong based on the final score.",
+        "dossier_signal_medium": "The idea looks moderate and needs manual review.",
+        "dossier_signal_weak": "The idea is weak or requires caution.",
+        "dossier_risk_low": "Risk looks low based on basic fields.",
+        "dossier_risk_medium": "There are signs of elevated risk.",
+        "dossier_risk_high": "Risk is high, caution is required.",
+        "dossier_liquidity_good": "Liquidity looks sufficient for monitoring.",
+        "dossier_liquidity_weak": "Liquidity is weak; slippage and noise are possible.",
+        "dossier_activity_good": "Trading volume looks active.",
+        "dossier_activity_weak": "Trading volume is weak, so the signal is less reliable.",
         "last_ideas": "Last Ideas",
         "id": "ID",
         "pair": "Pair",
@@ -560,6 +594,53 @@ def normalize_lang(value: str | None) -> str:
 
     return "ru"
 
+def build_ai_dossier(idea: dict, lang: str) -> dict:
+    """
+    Формирует первый read-only слой AI Investment Dossier v0.1.
+
+    Без OpenAI API.
+    Без записи в БД.
+    Только на базе уже имеющихся полей Cockpit.
+    """
+
+    texts = TEXTS[lang]
+
+    final_score = idea.get("final_score") or 0
+    risk_score = idea.get("risk_score") or 0
+    liquidity_usd = idea.get("liquidity_usd") or 0
+    volume_24h = idea.get("volume_24h") or 0
+
+    if final_score >= 80:
+        signal = texts["dossier_signal_strong"]
+    elif final_score >= 70:
+        signal = texts["dossier_signal_medium"]
+    else:
+        signal = texts["dossier_signal_weak"]
+
+    if risk_score <= 30:
+        risk = texts["dossier_risk_low"]
+    elif risk_score <= 60:
+        risk = texts["dossier_risk_medium"]
+    else:
+        risk = texts["dossier_risk_high"]
+
+    if liquidity_usd >= 100_000:
+        liquidity = texts["dossier_liquidity_good"]
+    else:
+        liquidity = texts["dossier_liquidity_weak"]
+
+    if volume_24h >= 50_000:
+        activity = texts["dossier_activity_good"]
+    else:
+        activity = texts["dossier_activity_weak"]
+
+    return {
+        "signal": signal,
+        "risk": risk,
+        "liquidity": liquidity,
+        "activity": activity,
+    }
+
 
 def status_text(status: str, lang: str) -> str:
     texts = TEXTS[lang]
@@ -995,6 +1076,8 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     if selected_idea:
         status = get_sensor_status(selected_idea)
         status_class = f"status-{status}"
+        dossier = build_ai_dossier(selected_idea, lang)
+        
 
         idea_card_html = f"""
         <h2 class="section-title">{texts["idea_card"]}</h2>
@@ -1009,6 +1092,14 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div><b>{texts["volume_24h"]}:</b> {format_number(selected_idea.get("volume_24h"))}</div>
             <div><b>{texts["change_24h"]}:</b> {format_number(selected_idea.get("price_change_24h"))}%</div>
             <div><b>{texts["sensor_status"]}:</b> <span class="{status_class}">{status_text(status, lang)}</span></div>
+            <hr>
+            <h3>{texts["ai_dossier"]}</h3>
+            <div><b>{texts["dossier_summary"]}:</b></div>
+            <div><b>{texts["dossier_signal"]}:</b> {html.escape(dossier["signal"])}</div>
+            <div><b>{texts["dossier_risk"]}:</b> {html.escape(dossier["risk"])}</div>
+            <div><b>{texts["dossier_liquidity"]}:</b> {html.escape(dossier["liquidity"])}</div>
+            <div><b>{texts["dossier_activity"]}:</b> {html.escape(dossier["activity"])}</div>
+            <div class="note">{texts["dossier_note"]}</div>
         </div>
         """
 
