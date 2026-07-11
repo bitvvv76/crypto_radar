@@ -18,6 +18,23 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Карточка идеи",
+        "high_risk": "High Risk Opportunity Radar v0.1",
+        "high_risk_summary": "Радар высокорисковых возможностей",
+        "high_risk_level": "Уровень сигнала",
+        "high_risk_reasons": "Причины",
+        "high_risk_note": "Это read-only research signal, а не рекомендация купить. Автоторговля и реальные деньги не используются.",
+        "high_risk_low": "Нет отдельного high-risk сигнала",
+        "high_risk_medium": "Есть high-risk research signal",
+        "high_risk_high": "Сильный high-risk research signal",
+        "high_risk_reason_strong_score": "Итоговая оценка высокая, идея может требовать отдельного наблюдения.",
+        "high_risk_reason_low_risk_score": "Базовый risk_score низкий.",
+        "high_risk_reason_good_liquidity": "Ликвидность достаточная для наблюдения.",
+        "high_risk_reason_good_volume": "Объём торгов заметный.",
+        "high_risk_reason_momentum": "Есть положительное движение за 24ч.",
+        "high_risk_reason_overheated": "Движение за 24ч слишком сильное, риск перегрева повышен.",
+        "high_risk_reason_sensor_reject": "Сенсор отклонил идею, поэтому high-risk сигнал ограничен.",
+        "high_risk_reason_anti_scam_high": "Anti-Scam блок показывает высокий риск, поэтому сигнал ограничен.",
+        "high_risk_reason_none": "Недостаточно признаков для отдельного high-risk research signal.",
         "smart_wallet": "Smart Wallet Radar v0.1",
         "smart_wallet_summary": "Smart wallet оценка",
         "smart_wallet_status": "Статус источника",
@@ -125,6 +142,23 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Idea Card",
+        "high_risk": "High Risk Opportunity Radar v0.1",
+        "high_risk_summary": "High Risk Opportunity Radar",
+        "high_risk_level": "Signal Level",
+        "high_risk_reasons": "Reasons",
+        "high_risk_note": "This is a read-only research signal, not a buy recommendation. Autotrading and real money are not used.",
+        "high_risk_low": "No separate high-risk signal",
+        "high_risk_medium": "High-risk research signal",
+        "high_risk_high": "Strong high-risk research signal",
+        "high_risk_reason_strong_score": "The final score is high, so the idea may deserve separate monitoring.",
+        "high_risk_reason_low_risk_score": "The base risk_score is low.",
+        "high_risk_reason_good_liquidity": "Liquidity is sufficient for observation.",
+        "high_risk_reason_good_volume": "Trading volume is notable.",
+        "high_risk_reason_momentum": "There is positive 24h momentum.",
+        "high_risk_reason_overheated": "The 24h move is too strong, so overheating risk is elevated.",
+        "high_risk_reason_sensor_reject": "The sensor rejected the idea, so the high-risk signal is limited.",
+        "high_risk_reason_anti_scam_high": "The Anti-Scam block shows high risk, so the signal is limited.",
+        "high_risk_reason_none": "There are not enough signs for a separate high-risk research signal.",
         "smart_wallet": "Smart Wallet Radar v0.1",
         "smart_wallet_summary": "Smart Wallet Assessment",
         "smart_wallet_status": "Source Status",
@@ -688,6 +722,82 @@ def normalize_lang(value: str | None) -> str:
         return "en"
 
     return "ru"
+
+def build_high_risk_opportunity_radar(
+    idea: dict,
+    lang: str,
+    sensor_status: str,
+    anti_scam: dict,
+) -> dict:
+    """
+    Формирует первый read-only слой High Risk Opportunity Radar v0.1.
+
+    Это research signal, а не buy-сигнал.
+    Без записи в БД.
+    Без изменения структуры БД.
+    Без внешних API.
+    Без автоторговли.
+    Без реальных денег.
+    """
+
+    texts = TEXTS[lang]
+
+    final_score = idea.get("final_score") or 0
+    risk_score = idea.get("risk_score") or 0
+    liquidity_usd = idea.get("liquidity_usd") or 0
+    volume_24h = idea.get("volume_24h") or 0
+    price_change_24h = idea.get("price_change_24h") or 0
+
+    reasons = []
+    signal_points = 0
+
+    if final_score >= 80:
+        reasons.append(texts["high_risk_reason_strong_score"])
+        signal_points += 2
+
+    if risk_score <= 20:
+        reasons.append(texts["high_risk_reason_low_risk_score"])
+        signal_points += 1
+
+    if liquidity_usd >= 50_000:
+        reasons.append(texts["high_risk_reason_good_liquidity"])
+        signal_points += 1
+
+    if volume_24h >= 10_000:
+        reasons.append(texts["high_risk_reason_good_volume"])
+        signal_points += 1
+
+    if 3 <= price_change_24h <= 30:
+        reasons.append(texts["high_risk_reason_momentum"])
+        signal_points += 1
+
+    if price_change_24h > 30:
+        reasons.append(texts["high_risk_reason_overheated"])
+        signal_points -= 1
+
+    if sensor_status == "reject":
+        reasons.append(texts["high_risk_reason_sensor_reject"])
+        signal_points -= 3
+
+    if anti_scam.get("risk_points", 0) >= 4:
+        reasons.append(texts["high_risk_reason_anti_scam_high"])
+        signal_points -= 3
+
+    if signal_points >= 5:
+        level = texts["high_risk_high"]
+    elif signal_points >= 3:
+        level = texts["high_risk_medium"]
+    else:
+        level = texts["high_risk_low"]
+
+    if not reasons:
+        reasons.append(texts["high_risk_reason_none"])
+
+    return {
+        "level": level,
+        "reasons": reasons,
+        "signal_points": signal_points,
+    }
 
 def build_smart_wallet_radar(idea: dict, lang: str) -> dict:
     """
@@ -1287,6 +1397,16 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         dossier = build_ai_dossier(selected_idea, lang)
         smart_wallet = build_smart_wallet_radar(selected_idea, lang)
         anti_scam = build_anti_scam_assessment(selected_idea, lang)
+        high_risk = build_high_risk_opportunity_radar(
+            selected_idea,
+            lang,
+            status,
+            anti_scam,
+        )
+        high_risk_reasons_html = "".join(
+            f"<li>{html.escape(reason)}</li>"
+            for reason in high_risk["reasons"]
+        )
         anti_scam_reasons_html = "".join(
             f"<li>{html.escape(reason)}</li>"
             for reason in anti_scam["reasons"]
@@ -1327,6 +1447,15 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
                 {anti_scam_reasons_html}
             </ul>
             <div class="note">{texts["anti_scam_note"]}</div>
+            <hr>
+            <h3>{texts["high_risk"]}</h3>
+            <div><b>{texts["high_risk_summary"]}:</b></div>
+            <div><b>{texts["high_risk_level"]}:</b> {html.escape(str(high_risk["level"]))}</div>
+            <div><b>{texts["high_risk_reasons"]}:</b></div>
+            <ul>
+                {high_risk_reasons_html}
+            </ul>
+            <div class="note">{texts["high_risk_note"]}</div>
             <hr>
             <h3>{texts["ai_dossier"]}</h3>
             <div><b>{texts["dossier_summary"]}:</b></div>
