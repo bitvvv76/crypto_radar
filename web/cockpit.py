@@ -92,6 +92,16 @@ TEXTS = {
         "volume_24h": "Объём 24ч",
         "change_24h": "Изменение 24ч",
         "sensor_status": "Статус сенсора",
+        "backtest_lab": "Backtest Lab v0.1",
+        "backtest_summary": "Анализ накопленных проверок",
+        "backtest_quality": "Качество результатов",
+        "backtest_win_rate": "Доля положительных проверок",
+        "backtest_interpretation": "Интерпретация",
+        "backtest_no_data": "Недостаточно данных для Backtest Lab.",
+        "backtest_quality_good": "Проверки выглядят положительно: средний результат выше нуля, положительных исходов больше отрицательных.",
+        "backtest_quality_mixed": "Результаты смешанные: есть положительные и отрицательные проверки, требуется больше истории.",
+        "backtest_quality_weak": "Результаты слабые: средний результат не подтверждает качество идей.",
+        "backtest_note": "Это read-only анализ price_checks. БД, scoring и автосканер не изменяются.",
         "checks_statistics": "Проверки / Статистика",
         "total_checks": "Всего проверок",
         "positive_checks": "Положительные",
@@ -216,6 +226,16 @@ TEXTS = {
         "volume_24h": "Volume 24h",
         "change_24h": "Change 24h",
         "sensor_status": "Sensor Status",
+        "backtest_lab": "Backtest Lab v0.1",
+        "backtest_summary": "Accumulated Checks Analysis",
+        "backtest_quality": "Result Quality",
+        "backtest_win_rate": "Positive Check Rate",
+        "backtest_interpretation": "Interpretation",
+        "backtest_no_data": "Not enough data for Backtest Lab.",
+        "backtest_quality_good": "Checks look positive: the average result is above zero and positive outcomes exceed negative outcomes.",
+        "backtest_quality_mixed": "Results are mixed: there are both positive and negative checks, and more history is needed.",
+        "backtest_quality_weak": "Results are weak: the average result does not confirm idea quality.",
+        "backtest_note": "This is a read-only price_checks analysis. The DB, scoring, and autoscan are not changed.",
         "checks_statistics": "Checks / Statistics",
         "total_checks": "Total Checks",
         "positive_checks": "Positive",
@@ -473,6 +493,45 @@ def load_checks_stats() -> dict:
         }
     finally:
         conn.close()
+
+def build_backtest_lab_summary(checks_stats: dict, lang: str) -> dict:
+    """
+    Формирует первый read-only слой Backtest Lab v0.1.
+
+    Использует уже загруженную статистику price_checks.
+    Без записи в БД.
+    Без изменения scoring.
+    Без изменения автосканера.
+    """
+
+    texts = TEXTS[lang]
+
+    total_checks = checks_stats.get("total_checks") or 0
+    positive_checks = checks_stats.get("positive_checks") or 0
+    negative_checks = checks_stats.get("negative_checks") or 0
+    avg_change = checks_stats.get("avg_change")
+
+    if total_checks <= 0:
+        return {
+            "quality": texts["backtest_no_data"],
+            "win_rate": None,
+            "interpretation": texts["backtest_no_data"],
+        }
+
+    win_rate = (positive_checks / total_checks) * 100
+
+    if avg_change is not None and avg_change > 0 and positive_checks > negative_checks:
+        quality = texts["backtest_quality_good"]
+    elif avg_change is not None and avg_change <= 0:
+        quality = texts["backtest_quality_weak"]
+    else:
+        quality = texts["backtest_quality_mixed"]
+
+    return {
+        "quality": quality,
+        "win_rate": win_rate,
+        "interpretation": quality,
+    }
 
 
 def load_latest_checks(limit: int = 10) -> list[dict]:
@@ -1108,6 +1167,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     freshness = load_data_freshness()
     stats = load_dashboard_stats()
     checks_stats = load_checks_stats()
+    backtest_lab = build_backtest_lab_summary(checks_stats, lang)
     latest_checks = load_latest_checks(limit=10)
     watchlist_stats = load_watchlist_stats()
     watchlist_items = load_watchlist_items(limit=10)
@@ -1151,6 +1211,28 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     <div class="card">
         <div class="card-title">{texts["freshness_warning"]}</div>
         <div class="note">{texts["freshness_note"]}</div>
+    </div>
+    """
+
+    backtest_lab_html = f"""
+    <h2 class="section-title">{texts["backtest_lab"]}</h2>
+    <div class="cards">
+        <div class="card">
+            <div class="card-title">{texts["backtest_summary"]}</div>
+            <div class="card-value">{checks_stats["total_checks"]}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["backtest_win_rate"]}</div>
+            <div class="card-value">{format_number(backtest_lab["win_rate"])}%</div>
+        </div>
+        <div class="card">
+            <div class="card-title">{texts["backtest_quality"]}</div>
+            <div class="card-value">{html.escape(str(backtest_lab["quality"]))}</div>
+        </div>
+    </div>
+    <div class="card">
+        <div><b>{texts["backtest_interpretation"]}:</b> {html.escape(str(backtest_lab["interpretation"]))}</div>
+        <div class="note">{texts["backtest_note"]}</div>
     </div>
     """
     checks_cards_html = f"""
@@ -1478,6 +1560,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     return render_page(
         cards_html
         + freshness_html
+        + backtest_lab_html
         + checks_cards_html
         + watchlist_cards_html
         + checks_by_period_html
