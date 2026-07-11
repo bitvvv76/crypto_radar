@@ -18,6 +18,12 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Карточка идеи",
+        "news_event": "News / Event + Narrative Layer v0.1",
+        "news_event_summary": "Новости, события и narrative-контекст",
+        "news_event_status": "Статус источника",
+        "news_event_status_missing": "Источник News / Event / Narrative данных пока не подключён",
+        "news_event_note": "Это read-only shell/fallback. Внешние API, web research и OpenAI API не используются.",
+        "news_event_context": "Будущий слой будет учитывать новости, события, листинги, unlock, burn, mainnet и narrative-факторы только как research context, а не buy-сигнал.",
         "high_risk": "High Risk Opportunity Radar v0.1",
         "high_risk_summary": "Радар высокорисковых возможностей",
         "high_risk_level": "Уровень сигнала",
@@ -152,6 +158,12 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Idea Card",
+        "news_event": "News / Event + Narrative Layer v0.1",
+        "news_event_summary": "News, Events, and Narrative Context",
+        "news_event_status": "Source Status",
+        "news_event_status_missing": "News / Event / Narrative data source is not connected yet",
+        "news_event_note": "This is a read-only shell/fallback. External APIs, web research, and OpenAI API are not used.",
+        "news_event_context": "The future layer will use news, events, listings, unlocks, burns, mainnet updates, and narrative factors only as research context, not as a buy signal.",
         "high_risk": "High Risk Opportunity Radar v0.1",
         "high_risk_summary": "High Risk Opportunity Radar",
         "high_risk_level": "Signal Level",
@@ -781,6 +793,24 @@ def normalize_lang(value: str | None) -> str:
         return "en"
 
     return "ru"
+def build_news_event_narrative_layer(idea: dict, lang: str) -> dict:
+    """
+    Формирует первый read-only shell/fallback для News / Event + Narrative Layer v0.1.
+
+    Без записи в БД.
+    Без внешних API.
+    Без web research в коде.
+    Без OpenAI API.
+    """
+
+    texts = TEXTS[lang]
+
+    return {
+        "available": False,
+        "status": texts["news_event_status_missing"],
+        "note": texts["news_event_note"],
+        "context": texts["news_event_context"],
+    }
 
 def build_high_risk_opportunity_radar(
     idea: dict,
@@ -1477,6 +1507,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         status = get_sensor_status(selected_idea)
         status_class = f"status-{status}"
         dossier = build_ai_dossier(selected_idea, lang)
+        news_event = build_news_event_narrative_layer(selected_idea, lang)
         smart_wallet = build_smart_wallet_radar(selected_idea, lang)
         anti_scam = build_anti_scam_assessment(selected_idea, lang)
         high_risk = build_high_risk_opportunity_radar(
@@ -1538,6 +1569,12 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
                 {high_risk_reasons_html}
             </ul>
             <div class="note">{texts["high_risk_note"]}</div>
+            <hr>
+            <h3>{texts["news_event"]}</h3>
+            <div><b>{texts["news_event_summary"]}:</b></div>
+            <div><b>{texts["news_event_status"]}:</b> {html.escape(str(news_event["status"]))}</div>
+            <div class="note">{html.escape(str(news_event["note"]))}</div>
+            <div class="note">{html.escape(str(news_event["context"]))}</div>
             <hr>
             <h3>{texts["ai_dossier"]}</h3>
             <div><b>{texts["dossier_summary"]}:</b></div>
