@@ -1170,6 +1170,29 @@ def render_page(content: str, lang: str) -> str:
             font-size: 13px;
             margin-top: 18px;
         }}
+        .idea-block {{
+            margin-top: 18px;
+            padding: 14px 16px;
+            border: 1px solid #1f2937;
+            border-radius: 10px;
+            background: #0b1220;
+        }}
+        .idea-block h3 {{
+            margin-top: 0;
+            margin-bottom: 10px;
+        }}
+        .idea-meta {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 8px 16px;
+            margin-bottom: 16px;
+        }}
+        .idea-note {{
+            margin-top: 10px;
+            color: #9ca3af;
+            font-size: 13px;
+            line-height: 1.45;
+        }}
     </style>
 </head>
 <body>
@@ -1535,62 +1558,70 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         idea_card_html = f"""
         <h2 class="section-title">{texts["idea_card"]}</h2>
         <div class="card">
-            <div><b>{texts["id"]}:</b> {selected_idea.get("id")}</div>
-            <div><b>{texts["pair"]}:</b> {html.escape(str(selected_idea.get("pair_symbol") or "UNKNOWN"))}</div>
-            <div><b>{texts["chain"]}:</b> {html.escape(str(selected_idea.get("chain_id") or "—"))}</div>
-            <div><b>{texts["dex"]}:</b> {html.escape(str(selected_idea.get("dex_id") or "—"))}</div>
-            <div><b>{texts["final_score"]}:</b> {format_number(selected_idea.get("final_score"))}</div>
-            <div><b>{texts["risk_score"]}:</b> {format_number(selected_idea.get("risk_score"))}</div>
-            <div><b>{texts["liquidity_usd"]}:</b> {format_number(selected_idea.get("liquidity_usd"))}</div>
-            <div><b>{texts["volume_24h"]}:</b> {format_number(selected_idea.get("volume_24h"))}</div>
-            <div><b>{texts["change_24h"]}:</b> {format_number(selected_idea.get("price_change_24h"))}%</div>
-            <div><b>{texts["sensor_status"]}:</b> <span class="{status_class}">{status_text(status, lang)}</span></div>
-            <hr>
-            <h3>{texts["smart_wallet"]}</h3>
-            <div><b>{texts["smart_wallet_summary"]}:</b></div>
-            <div><b>{texts["smart_wallet_status"]}:</b> {html.escape(str(smart_wallet["status"]))}</div>
-            <div class="note">{html.escape(str(smart_wallet["note"]))}</div>
-            <div class="note">{html.escape(str(smart_wallet["next_step"]))}</div>
-            <hr>
-            <h3>{texts["anti_scam"]}</h3>
-            <div><b>{texts["anti_scam_summary"]}:</b></div>
-            <div><b>{texts["anti_scam_level"]}:</b> {html.escape(str(anti_scam["level"]))}</div>
-            <div><b>{texts["anti_scam_reasons"]}:</b></div>
-            <ul>
-                {anti_scam_reasons_html}
-            </ul>
-            <div class="note">{texts["anti_scam_note"]}</div>
-            <hr>
-            <h3>{texts["high_risk"]}</h3>
-            <div><b>{texts["high_risk_summary"]}:</b></div>
-            <div><b>{texts["high_risk_level"]}:</b> {html.escape(str(high_risk["level"]))}</div>
-            <div><b>{texts["high_risk_reasons"]}:</b></div>
-            <ul>
-                {high_risk_reasons_html}
-            </ul>
-            <div class="note">{texts["high_risk_note"]}</div>
-            <hr>
-            <h3>{texts["news_event"]}</h3>
-            <div><b>{texts["news_event_summary"]}:</b></div>
-            <div><b>{texts["news_event_status"]}:</b> {html.escape(str(news_event["status"]))}</div>
-            <div class="note">{html.escape(str(news_event["note"]))}</div>
-            <div class="note">{html.escape(str(news_event["context"]))}</div>
-            <hr>
-            <h3>{texts["ai_dossier"]}</h3>
-            <div><b>{texts["dossier_summary"]}:</b></div>
-            <div><b>{texts["dossier_signal"]}:</b> {html.escape(dossier["signal"])}</div>
-            <div><b>{texts["dossier_risk"]}:</b> {html.escape(dossier["risk"])}</div>
-            <div><b>{texts["dossier_liquidity"]}:</b> {html.escape(dossier["liquidity"])}</div>
-            <div><b>{texts["dossier_activity"]}:</b> {html.escape(dossier["activity"])}</div>
-            <div class="note">{texts["dossier_note"]}</div>
-            <hr>
-            <h3>{texts["paper_portfolio"]}</h3>
-            <div><b>{texts["paper_preview"]}:</b></div>
-            <div><b>{texts["paper_entry_price"]}:</b> {format_number(paper_preview["entry_price"])}</div>
-            <div><b>{texts["paper_latest_price"]}:</b> {format_number(paper_preview["latest_price"])}</div>
-            <div><b>{texts["paper_result"]}:</b> {format_number(paper_preview["result_percent"])}%</div>
-            <div><b>{texts["paper_status"]}:</b> {html.escape(str(paper_preview["status"]))}</div>
-            <div class="note">{html.escape(str(paper_preview["note"]))}</div>
+            <div class="idea-meta">
+                <div><b>{texts["id"]}:</b> {selected_idea.get("id")}</div>
+                <div><b>{texts["pair"]}:</b> {html.escape(str(selected_idea.get("pair_symbol") or "UNKNOWN"))}</div>
+                <div><b>{texts["chain"]}:</b> {html.escape(str(selected_idea.get("chain_id") or "—"))}</div>
+                <div><b>{texts["dex"]}:</b> {html.escape(str(selected_idea.get("dex_id") or "—"))}</div>
+                <div><b>{texts["final_score"]}:</b> {format_number(selected_idea.get("final_score"))}</div>
+                <div><b>{texts["risk_score"]}:</b> {format_number(selected_idea.get("risk_score"))}</div>
+                <div><b>{texts["liquidity_usd"]}:</b> {format_number(selected_idea.get("liquidity_usd"))}</div>
+                <div><b>{texts["volume_24h"]}:</b> {format_number(selected_idea.get("volume_24h"))}</div>
+                <div><b>{texts["change_24h"]}:</b> {format_number(selected_idea.get("price_change_24h"))}%</div>
+                <div><b>{texts["sensor_status"]}:</b> <span class="{status_class}">{status_text(status, lang)}</span></div>
+            </div>
+            <div class="idea-block">
+                <h3>{texts["smart_wallet"]}</h3>
+                <div><b>{texts["smart_wallet_summary"]}:</b></div>
+                <div><b>{texts["smart_wallet_status"]}:</b> {html.escape(str(smart_wallet["status"]))}</div>
+                <div class="idea-note">{html.escape(str(smart_wallet["note"]))}</div>
+                <div class="idea-note">{html.escape(str(smart_wallet["next_step"]))}</div>
+            </div>
+            <div class="idea-block">
+                <h3>{texts["anti_scam"]}</h3>
+                <div><b>{texts["anti_scam_summary"]}:</b></div>
+                <div><b>{texts["anti_scam_level"]}:</b> {html.escape(str(anti_scam["level"]))}</div>
+                <div><b>{texts["anti_scam_reasons"]}:</b></div>
+                <ul>
+                    {anti_scam_reasons_html}
+                </ul>
+                <div class="idea-note">{texts["anti_scam_note"]}</div>
+            </div>
+            <div class="idea-block">
+                <h3>{texts["high_risk"]}</h3>
+                <div><b>{texts["high_risk_summary"]}:</b></div>
+                <div><b>{texts["high_risk_level"]}:</b> {html.escape(str(high_risk["level"]))}</div>
+                <div><b>{texts["high_risk_reasons"]}:</b></div>
+                <ul>
+                    {high_risk_reasons_html}
+                </ul>
+                <div class="idea-note">{texts["high_risk_note"]}</div>
+            </div>
+            <div class="idea-block">
+                <h3>{texts["news_event"]}</h3>
+                <div><b>{texts["news_event_summary"]}:</b></div>
+                <div><b>{texts["news_event_status"]}:</b> {html.escape(str(news_event["status"]))}</div>
+                <div class="idea-note">{html.escape(str(news_event["note"]))}</div>
+                <div class="idea-note">{html.escape(str(news_event["context"]))}</div>
+            </div>
+            <div class="idea-block">
+                <h3>{texts["ai_dossier"]}</h3>
+                <div><b>{texts["dossier_summary"]}:</b></div>
+                <div><b>{texts["dossier_signal"]}:</b> {html.escape(dossier["signal"])}</div>
+                <div><b>{texts["dossier_risk"]}:</b> {html.escape(dossier["risk"])}</div>
+                <div><b>{texts["dossier_liquidity"]}:</b> {html.escape(dossier["liquidity"])}</div>
+                <div><b>{texts["dossier_activity"]}:</b> {html.escape(dossier["activity"])}</div>
+                <div class="idea-note">{texts["dossier_note"]}</div>
+            </div>
+            <div class="idea-block">
+                <h3>{texts["paper_portfolio"]}</h3>
+                <div><b>{texts["paper_preview"]}:</b></div>
+                <div><b>{texts["paper_entry_price"]}:</b> {format_number(paper_preview["entry_price"])}</div>
+                <div><b>{texts["paper_latest_price"]}:</b> {format_number(paper_preview["latest_price"])}</div>
+                <div><b>{texts["paper_result"]}:</b> {format_number(paper_preview["result_percent"])}%</div>
+                <div><b>{texts["paper_status"]}:</b> {html.escape(str(paper_preview["status"]))}</div>
+                <div class="idea-note">{html.escape(str(paper_preview["note"]))}</div>
+            </div>
         </div>
         """
 
