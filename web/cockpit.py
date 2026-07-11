@@ -18,6 +18,15 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Карточка идеи",
+        "dashboard_nav": "Навигация Cockpit",
+        "nav_data_source": "Источник данных",
+        "nav_backtest": "Backtest Lab",
+        "nav_checks": "Проверки / Статистика",
+        "nav_watchlist": "Watchlist",
+        "nav_latest_checks": "Последние проверки",
+        "nav_idea_card": "Карточка идеи",
+        "nav_last_ideas": "Последние идеи",
+        "language_hint": "Режим языка",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "Новости, события и narrative-контекст",
         "news_event_status": "Статус источника",
@@ -158,6 +167,15 @@ TEXTS = {
         "strong_ideas": "Score ≥ 70",
         "weak_ideas": "Score < 70",
         "idea_card": "Idea Card",
+        "dashboard_nav": "Cockpit Navigation",
+        "nav_data_source": "Data Source",
+        "nav_backtest": "Backtest Lab",
+        "nav_checks": "Checks / Statistics",
+        "nav_watchlist": "Watchlist",
+        "nav_latest_checks": "Latest Checks",
+        "nav_idea_card": "Idea Card",
+        "nav_last_ideas": "Last Ideas",
+        "language_hint": "Language Mode",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "News, Events, and Narrative Context",
         "news_event_status": "Source Status",
@@ -1165,6 +1183,35 @@ def render_page(content: str, lang: str) -> str:
             margin: 26px 0 12px;
             font-size: 20px;
         }}
+
+                .dashboard-section {{
+            margin-top: 22px;
+            padding: 18px;
+            border: 1px solid #1f2937;
+            border-radius: 14px;
+            background: #0b1220;
+        }}
+        .dashboard-section .section-title {{
+            margin-top: 0;
+        }}
+        .dashboard-nav {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 18px 0 24px;
+        }}
+        .dashboard-nav a {{
+            color: #93c5fd;
+            text-decoration: none;
+            border: 1px solid #1f2937;
+            border-radius: 999px;
+            padding: 8px 12px;
+            background: #111827;
+            font-size: 13px;
+        }}
+        .dashboard-nav a:hover {{
+            border-color: #60a5fa;
+        }}
         .note {{
             color: #9ca3af;
             font-size: 13px;
@@ -1225,6 +1272,27 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     watchlist_stats = load_watchlist_stats()
     watchlist_items = load_watchlist_items(limit=10)
     ideas = load_last_ideas(limit=20)
+    idea_card_nav_html = ""
+    if selected_idea:
+        idea_card_nav_html = f"""
+            <a href="#idea-card">{texts["nav_idea_card"]}</a>
+        """
+
+    dashboard_nav_html = f"""
+    <div class="dashboard-section">
+        <div class="card-title">{texts["dashboard_nav"]}</div>
+        <div class="dashboard-nav">
+            <a href="#data-source">{texts["nav_data_source"]}</a>
+            <a href="#backtest-lab">{texts["nav_backtest"]}</a>
+            <a href="#checks-statistics">{texts["nav_checks"]}</a>
+            <a href="#watchlist">{texts["nav_watchlist"]}</a>
+            <a href="#latest-checks">{texts["nav_latest_checks"]}</a>
+            {idea_card_nav_html}
+            <a href="#last-ideas">{texts["nav_last_ideas"]}</a>
+        </div>
+        <div class="note">{texts["language_hint"]}: {lang.upper()}</div>
+    </div>
+    """
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -1242,8 +1310,9 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     </div>
     """
     freshness_html = f"""
-    <h2 class="section-title">{texts["data_source"]}</h2>
-    <div class="cards">
+        <section class="dashboard-section" id="data-source">
+        <h2 class="section-title">{texts["data_source"]}</h2>
+        <div class="cards">
         <div class="card">
             <div class="card-title">{texts["source_type"]}</div>
             <div class="card-value">{html.escape(str(freshness["data_source"]))}</div>
@@ -1261,15 +1330,17 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div class="card-value">{html.escape(str(freshness["last_check_checked_at"] or "—"))}</div>
         </div>
     </div>
-    <div class="card">
-        <div class="card-title">{texts["freshness_warning"]}</div>
-        <div class="note">{texts["freshness_note"]}</div>
-    </div>
-    """
+        <div class="card">
+            <div class="card-title">{texts["freshness_warning"]}</div>
+            <div class="note">{texts["freshness_note"]}</div>
+        </div>
+        </section>
+        """
 
     backtest_lab_html = f"""
-    <h2 class="section-title">{texts["backtest_lab"]}</h2>
-    <div class="cards">
+        <section class="dashboard-section" id="backtest-lab">
+        <h2 class="section-title">{texts["backtest_lab"]}</h2>
+        <div class="cards">
         <div class="card">
             <div class="card-title">{texts["backtest_summary"]}</div>
             <div class="card-value">{checks_stats["total_checks"]}</div>
@@ -1283,14 +1354,16 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div class="card-value">{html.escape(str(backtest_lab["quality"]))}</div>
         </div>
     </div>
-    <div class="card">
-        <div><b>{texts["backtest_interpretation"]}:</b> {html.escape(str(backtest_lab["interpretation"]))}</div>
-        <div class="note">{texts["backtest_note"]}</div>
-    </div>
-    """
+        <div class="card">
+            <div><b>{texts["backtest_interpretation"]}:</b> {html.escape(str(backtest_lab["interpretation"]))}</div>
+            <div class="note">{texts["backtest_note"]}</div>
+        </div>
+        </section>
+        """
     checks_cards_html = f"""
-    <h2 class="section-title">{texts["checks_statistics"]}</h2>
-    <div class="cards">
+        <section class="dashboard-section" id="checks-statistics">
+        <h2 class="section-title">{texts["checks_statistics"]}</h2>
+        <div class="cards">
         <div class="card">
             <div class="card-title">{texts["total_checks"]}</div>
             <div class="card-value">{checks_stats["total_checks"]}</div>
@@ -1316,11 +1389,13 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             <div class="card-value">{format_number(checks_stats["worst_change"])}%</div>
         </div>
     </div>
+    </section>
     """
     if watchlist_stats["available"]:
         watchlist_cards_html = f"""
-        <h2 class="section-title">{texts["watchlist"]}</h2>
-        <div class="cards">
+            <section class="dashboard-section" id="watchlist">
+            <h2 class="section-title">{texts["watchlist"]}</h2>
+            <div class="card">
             <div class="card">
                 <div class="card-title">{texts["watchlist_total"]}</div>
                 <div class="card-value">{watchlist_stats["total"]}</div>
@@ -1346,14 +1421,17 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
                 <div class="card-value">{watchlist_stats["data_missing"]}</div>
             </div>
         </div>
+        </section>
         """
     else:
         watchlist_cards_html = f"""
-        <h2 class="section-title">{texts["watchlist"]}</h2>
-        <div class="card">
+            <section class="dashboard-section" id="watchlist">
+            <h2 class="section-title">{texts["watchlist"]}</h2>
+            <div class="cards">
             <div class="card-title">{texts["watchlist_unavailable"]}</div>
             <div class="note">{texts["watchlist_unavailable_note"]}</div>
         </div>
+        </section>
         """
 
     rows = []
@@ -1382,8 +1460,9 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         )
 
     table_html = f"""
-    <h2 class="section-title">{texts["last_ideas"]}</h2>
-    <div class="table-wrap">
+        <section class="dashboard-section" id="last-ideas">
+        <h2 class="section-title">{texts["last_ideas"]}</h2>
+        <div class="table-wrap">
     <table>
         <thead>
             <tr>
@@ -1404,6 +1483,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </tbody>
     </table>
     </div>
+    </section>
     """
 
     period_rows = []
@@ -1419,8 +1499,9 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         )
 
     checks_by_period_html = f"""
-    <h2 class="section-title">{texts["checks_by_period"]}</h2>
-    <div class="table-wrap">
+        <section class="dashboard-section" id="checks-by-period">
+        <h2 class="section-title">{texts["checks_by_period"]}</h2>
+        <div class="table-wrap">
     <table>
         <thead>
             <tr>
@@ -1433,6 +1514,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </tbody>
     </table>
     </div>
+    </section>
     """
 
     check_rows = []
@@ -1453,8 +1535,9 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         )
 
     latest_checks_html = f"""
-    <h2 class="section-title">{texts["latest_checks"]}</h2>
-    <div class="table-wrap">
+        <section class="dashboard-section" id="latest-checks">
+        <h2 class="section-title">{texts["latest_checks"]}</h2>
+        <div class="table-wrap">
     <table>
         <thead>
             <tr>
@@ -1472,6 +1555,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </tbody>
     </table>
     </div>
+    </section>
     """
 
     watchlist_rows = []
@@ -1497,8 +1581,9 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
 
     if watchlist_stats["available"] and watchlist_rows:
         latest_watchlist_html = f"""
-        <h2 class="section-title">{texts["latest_watchlist"]}</h2>
-        <div class="table-wrap">
+            <section class="dashboard-section" id="latest-watchlist">
+            <h2 class="section-title">{texts["latest_watchlist"]}</h2>
+            <div class="table-wrap">
         <table>
             <thead>
                 <tr>
@@ -1520,6 +1605,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
             </tbody>
         </table>
         </div>
+        </section>
         """
     else:
         latest_watchlist_html = ""
@@ -1556,7 +1642,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         
 
         idea_card_html = f"""
-        <h2 class="section-title">{texts["idea_card"]}</h2>
+        <h2 class="section-title" id="idea-card">{texts["idea_card"]}</h2>
         <div class="card">
             <div class="idea-meta">
                 <div><b>{texts["id"]}:</b> {selected_idea.get("id")}</div>
@@ -1627,6 +1713,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
 
     return render_page(
         cards_html
+        + dashboard_nav_html
         + freshness_html
         + backtest_lab_html
         + checks_cards_html
