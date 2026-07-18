@@ -33,6 +33,13 @@ TEXTS = {
         "release_checkpoint_scope": "Область проверки",
         "release_checkpoint_scope_text": "Dashboard, Idea Card, RU / EN навигация, fallback-сообщения и порядок модулей",
         "release_checkpoint_note": "БД, scoring, sensors, auto_scan.py, внешние API, OpenAI API, VPS/systemd, автоторговля и реальные деньги не используются.",
+        "deployment_readiness": "Cockpit v0.2 Deployment Readiness",
+        "deployment_readiness_status": "Статус подготовки",
+        "deployment_readiness_status_text": "Локальная read-only подготовка к будущему запуску рядом с актуальной статистикой",
+        "deployment_readiness_db": "План источника данных",
+        "deployment_readiness_db_text": "Cockpit должен читать SQLite-базу только в режиме просмотра. Путь к базе должен быть явно проверен перед запуском.",
+        "deployment_readiness_rules": "Правила запуска",
+        "deployment_readiness_rules_text": "VPS/systemd и боевой автосканер не трогаются без отдельного решения. Запись в БД, внешние API, OpenAI API, автоторговля и реальные деньги не используются.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "Новости, события и narrative-контекст",
         "news_event_status": "Статус источника",
@@ -188,6 +195,13 @@ TEXTS = {
         "release_checkpoint_scope": "Checkpoint Scope",
         "release_checkpoint_scope_text": "Dashboard, Idea Card, RU / EN navigation, fallback messages, and module order",
         "release_checkpoint_note": "The DB, scoring, sensors, auto_scan.py, external APIs, OpenAI API, VPS/systemd, autotrading, and real money are not used.",
+        "deployment_readiness": "Cockpit v0.2 Deployment Readiness",
+        "deployment_readiness_status": "Readiness Status",
+        "deployment_readiness_status_text": "Local read-only preparation for a future launch near up-to-date operational statistics",
+        "deployment_readiness_db": "Data Source Plan",
+        "deployment_readiness_db_text": "Cockpit must read the SQLite database in view-only mode. The database path must be explicitly checked before launch.",
+        "deployment_readiness_rules": "Launch Rules",
+        "deployment_readiness_rules_text": "VPS/systemd and the production autoscan are not touched without a separate decision. DB writes, external APIs, OpenAI API, autotrading, and real money are not used.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "News, Events, and Narrative Context",
         "news_event_status": "Source Status",
@@ -1315,6 +1329,16 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
     </section>
     """
+    deployment_readiness_html = f"""
+    <section class="dashboard-section" id="deployment-readiness">
+        <h2 class="section-title">{texts["deployment_readiness"]}</h2>
+        <div class="card">
+            <div><b>{texts["deployment_readiness_status"]}:</b> {texts["deployment_readiness_status_text"]}</div>
+            <div><b>{texts["deployment_readiness_db"]}:</b> {texts["deployment_readiness_db_text"]}</div>
+            <div><b>{texts["deployment_readiness_rules"]}:</b> {texts["deployment_readiness_rules_text"]}</div>
+        </div>
+    </section>
+    """
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -1737,6 +1761,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         cards_html
         + dashboard_nav_html
         + release_checkpoint_html
+        + deployment_readiness_html
         + freshness_html
         + backtest_lab_html
         + checks_cards_html
