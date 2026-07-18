@@ -60,6 +60,15 @@ TEXTS = {
         "manual_data_path_freshness_text": "Перед будущим pilot нужно вручную проверить последнюю идею, последнюю проверку, pairs, price_checks и watchlist/fallback.",
         "manual_data_path_limits": "Запреты",
         "manual_data_path_limits_text": "VPS/systemd, crypto-auto-scan.service, crypto-auto-scan.timer и боевой автосканер не трогаются без отдельного решения.",
+        "vps_pilot_runbook": "VPS Read-only Pilot Runbook",
+        "vps_pilot_runbook_status": "Статус runbook",
+        "vps_pilot_runbook_status_text": "Runbook готовится заранее. Фактический VPS pilot не запускается автоматически.",
+        "vps_pilot_runbook_precheck": "Go / No-Go проверки",
+        "vps_pilot_runbook_precheck_text": "Перед pilot нужно отдельно подтвердить путь к базе, SELECT-only режим, способ запуска, порт, доступ, остановку и откат.",
+        "vps_pilot_runbook_autoscan": "Боевой автосканер",
+        "vps_pilot_runbook_autoscan_text": "crypto-auto-scan.service и crypto-auto-scan.timer не останавливаются и не меняются.",
+        "vps_pilot_runbook_decision": "Решение о запуске",
+        "vps_pilot_runbook_decision_text": "Любой фактический запуск на VPS допускается только отдельным подтверждённым решением после ручной проверки.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "Новости, события и narrative-контекст",
         "news_event_status": "Статус источника",
@@ -242,6 +251,15 @@ TEXTS = {
         "manual_data_path_freshness_text": "Before a future pilot, manually check the latest idea, latest check, pairs, price_checks, and watchlist/fallback.",
         "manual_data_path_limits": "Limits",
         "manual_data_path_limits_text": "VPS/systemd, crypto-auto-scan.service, crypto-auto-scan.timer, and the production autoscan are not touched without a separate decision.",
+        "vps_pilot_runbook": "VPS Read-only Pilot Runbook",
+        "vps_pilot_runbook_status": "Runbook Status",
+        "vps_pilot_runbook_status_text": "The runbook is prepared in advance. The VPS pilot is not launched automatically.",
+        "vps_pilot_runbook_precheck": "Go / No-Go Checks",
+        "vps_pilot_runbook_precheck_text": "Before a pilot, separately confirm the DB path, SELECT-only mode, launch method, port, access, stop procedure, and rollback.",
+        "vps_pilot_runbook_autoscan": "Production Autoscan",
+        "vps_pilot_runbook_autoscan_text": "crypto-auto-scan.service and crypto-auto-scan.timer are not stopped or changed.",
+        "vps_pilot_runbook_decision": "Launch Decision",
+        "vps_pilot_runbook_decision_text": "Any actual VPS launch is allowed only after a separate confirmed decision and manual verification.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "News, Events, and Narrative Context",
         "news_event_status": "Source Status",
@@ -1402,6 +1420,17 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
     </section>
     """
+    vps_pilot_runbook_html = f"""
+    <section class="dashboard-section" id="vps-pilot-runbook">
+        <h2 class="section-title">{texts["vps_pilot_runbook"]}</h2>
+        <div class="card">
+            <div><b>{texts["vps_pilot_runbook_status"]}:</b> {texts["vps_pilot_runbook_status_text"]}</div>
+            <div><b>{texts["vps_pilot_runbook_precheck"]}:</b> {texts["vps_pilot_runbook_precheck_text"]}</div>
+            <div><b>{texts["vps_pilot_runbook_autoscan"]}:</b> {texts["vps_pilot_runbook_autoscan_text"]}</div>
+            <div class="note"><b>{texts["vps_pilot_runbook_decision"]}:</b> {texts["vps_pilot_runbook_decision_text"]}</div>
+        </div>
+    </section>
+    """
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -1827,6 +1856,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         + deployment_readiness_html
         + vps_pilot_checklist_html
         + manual_data_path_html
+        + vps_pilot_runbook_html
         + freshness_html
         + backtest_lab_html
         + checks_cards_html
