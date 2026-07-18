@@ -49,6 +49,17 @@ TEXTS = {
         "vps_pilot_manual_checks_text": "Проверить путь к БД, свежесть данных, отсутствие записи в БД, отсутствие изменений systemd/VPS и отсутствие влияния на боевой автосканер.",
         "vps_pilot_limits": "Ограничения",
         "vps_pilot_limits_text": "Без изменений auto_scan.py, database.py, scoring.py, sensors/, структуры БД, VPS/systemd, API, автоторговли и реальных денег.",
+        "manual_data_path": "Manual Data Path Verification",
+        "manual_data_path_status": "Статус проверки",
+        "manual_data_path_status_text": "Ручная проверка пути к SQLite-базе для будущего read-only VPS pilot.",
+        "manual_data_path_db": "Проверяемый путь",
+        "manual_data_path_db_text": "Cockpit сейчас показывает фактический DB_PATH в блоке Data Source / Freshness.",
+        "manual_data_path_select": "Режим чтения",
+        "manual_data_path_select_text": "Проверка должна подтвердить, что Cockpit использует только SELECT-запросы и не выполняет запись в БД.",
+        "manual_data_path_freshness": "Свежесть данных",
+        "manual_data_path_freshness_text": "Перед будущим pilot нужно вручную проверить последнюю идею, последнюю проверку, pairs, price_checks и watchlist/fallback.",
+        "manual_data_path_limits": "Запреты",
+        "manual_data_path_limits_text": "VPS/systemd, crypto-auto-scan.service, crypto-auto-scan.timer и боевой автосканер не трогаются без отдельного решения.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "Новости, события и narrative-контекст",
         "news_event_status": "Статус источника",
@@ -220,6 +231,17 @@ TEXTS = {
         "vps_pilot_manual_checks_text": "Check the DB path, data freshness, no DB writes, no systemd/VPS changes, and no impact on the production autoscan.",
         "vps_pilot_limits": "Limits",
         "vps_pilot_limits_text": "No changes to auto_scan.py, database.py, scoring.py, sensors/, DB structure, VPS/systemd, APIs, autotrading, or real money.",
+        "manual_data_path": "Manual Data Path Verification",
+        "manual_data_path_status": "Verification Status",
+        "manual_data_path_status_text": "Manual SQLite database path verification for a future read-only VPS pilot.",
+        "manual_data_path_db": "Path Under Review",
+        "manual_data_path_db_text": "Cockpit currently displays the actual DB_PATH in the Data Source / Freshness block.",
+        "manual_data_path_select": "Read Mode",
+        "manual_data_path_select_text": "The check must confirm that Cockpit uses SELECT queries only and does not write to the DB.",
+        "manual_data_path_freshness": "Data Freshness",
+        "manual_data_path_freshness_text": "Before a future pilot, manually check the latest idea, latest check, pairs, price_checks, and watchlist/fallback.",
+        "manual_data_path_limits": "Limits",
+        "manual_data_path_limits_text": "VPS/systemd, crypto-auto-scan.service, crypto-auto-scan.timer, and the production autoscan are not touched without a separate decision.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "News, Events, and Narrative Context",
         "news_event_status": "Source Status",
@@ -1368,6 +1390,18 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
     </section>
     """
+    manual_data_path_html = f"""
+    <section class="dashboard-section" id="manual-data-path">
+        <h2 class="section-title">{texts["manual_data_path"]}</h2>
+        <div class="card">
+            <div><b>{texts["manual_data_path_status"]}:</b> {texts["manual_data_path_status_text"]}</div>
+            <div><b>{texts["manual_data_path_db"]}:</b> {texts["manual_data_path_db_text"]}</div>
+            <div><b>{texts["manual_data_path_select"]}:</b> {texts["manual_data_path_select_text"]}</div>
+            <div><b>{texts["manual_data_path_freshness"]}:</b> {texts["manual_data_path_freshness_text"]}</div>
+            <div class="note"><b>{texts["manual_data_path_limits"]}:</b> {texts["manual_data_path_limits_text"]}</div>
+        </div>
+    </section>
+    """
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -1792,6 +1826,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         + release_checkpoint_html
         + deployment_readiness_html
         + vps_pilot_checklist_html
+        + manual_data_path_html
         + freshness_html
         + backtest_lab_html
         + checks_cards_html
