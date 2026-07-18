@@ -27,6 +27,12 @@ TEXTS = {
         "nav_idea_card": "Карточка идеи",
         "nav_last_ideas": "Последние идеи",
         "language_hint": "Режим языка",
+        "release_checkpoint": "Cockpit v0.2 Release Checkpoint",
+        "release_checkpoint_status": "Статус проверки",
+        "release_checkpoint_status_text": "Read-only hardening: проверка интерфейса без изменения данных и логики",
+        "release_checkpoint_scope": "Область проверки",
+        "release_checkpoint_scope_text": "Dashboard, Idea Card, RU / EN навигация, fallback-сообщения и порядок модулей",
+        "release_checkpoint_note": "БД, scoring, sensors, auto_scan.py, внешние API, OpenAI API, VPS/systemd, автоторговля и реальные деньги не используются.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "Новости, события и narrative-контекст",
         "news_event_status": "Статус источника",
@@ -176,6 +182,12 @@ TEXTS = {
         "nav_idea_card": "Idea Card",
         "nav_last_ideas": "Last Ideas",
         "language_hint": "Language Mode",
+        "release_checkpoint": "Cockpit v0.2 Release Checkpoint",
+        "release_checkpoint_status": "Checkpoint Status",
+        "release_checkpoint_status_text": "Read-only hardening: UI verification without changing data or logic",
+        "release_checkpoint_scope": "Checkpoint Scope",
+        "release_checkpoint_scope_text": "Dashboard, Idea Card, RU / EN navigation, fallback messages, and module order",
+        "release_checkpoint_note": "The DB, scoring, sensors, auto_scan.py, external APIs, OpenAI API, VPS/systemd, autotrading, and real money are not used.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "News, Events, and Narrative Context",
         "news_event_status": "Source Status",
@@ -1293,6 +1305,16 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         <div class="note">{texts["language_hint"]}: {lang.upper()}</div>
     </div>
     """
+    release_checkpoint_html = f"""
+    <section class="dashboard-section" id="release-checkpoint">
+        <h2 class="section-title">{texts["release_checkpoint"]}</h2>
+        <div class="card">
+            <div><b>{texts["release_checkpoint_status"]}:</b> {texts["release_checkpoint_status_text"]}</div>
+            <div><b>{texts["release_checkpoint_scope"]}:</b> {texts["release_checkpoint_scope_text"]}</div>
+            <div class="note">{texts["release_checkpoint_note"]}</div>
+        </div>
+    </section>
+    """
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -1714,6 +1736,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
     return render_page(
         cards_html
         + dashboard_nav_html
+        + release_checkpoint_html
         + freshness_html
         + backtest_lab_html
         + checks_cards_html
