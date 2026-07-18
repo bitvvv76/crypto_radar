@@ -40,6 +40,15 @@ TEXTS = {
         "deployment_readiness_db_text": "Cockpit должен читать SQLite-базу только в режиме просмотра. Путь к базе должен быть явно проверен перед запуском.",
         "deployment_readiness_rules": "Правила запуска",
         "deployment_readiness_rules_text": "VPS/systemd и боевой автосканер не трогаются без отдельного решения. Запись в БД, внешние API, OpenAI API, автоторговля и реальные деньги не используются.",
+        "vps_pilot_checklist": "VPS Read-only Pilot Checklist",
+        "vps_pilot_status": "Статус пилота",
+        "vps_pilot_status_text": "Пилот не запускается сейчас. Это только checklist для будущего read-only запуска.",
+        "vps_pilot_data_path": "Проверка пути к базе",
+        "vps_pilot_data_path_text": "Перед любым запуском нужно вручную подтвердить, какую SQLite-базу читает Cockpit, и что режим остаётся только на чтение.",
+        "vps_pilot_manual_checks": "Ручные проверки перед запуском",
+        "vps_pilot_manual_checks_text": "Проверить путь к БД, свежесть данных, отсутствие записи в БД, отсутствие изменений systemd/VPS и отсутствие влияния на боевой автосканер.",
+        "vps_pilot_limits": "Ограничения",
+        "vps_pilot_limits_text": "Без изменений auto_scan.py, database.py, scoring.py, sensors/, структуры БД, VPS/systemd, API, автоторговли и реальных денег.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "Новости, события и narrative-контекст",
         "news_event_status": "Статус источника",
@@ -202,6 +211,15 @@ TEXTS = {
         "deployment_readiness_db_text": "Cockpit must read the SQLite database in view-only mode. The database path must be explicitly checked before launch.",
         "deployment_readiness_rules": "Launch Rules",
         "deployment_readiness_rules_text": "VPS/systemd and the production autoscan are not touched without a separate decision. DB writes, external APIs, OpenAI API, autotrading, and real money are not used.",
+        "vps_pilot_checklist": "VPS Read-only Pilot Checklist",
+        "vps_pilot_status": "Pilot Status",
+        "vps_pilot_status_text": "The pilot is not launched now. This is only a checklist for a future read-only launch.",
+        "vps_pilot_data_path": "Database Path Verification",
+        "vps_pilot_data_path_text": "Before any launch, manually confirm which SQLite database Cockpit reads and that the mode remains read-only.",
+        "vps_pilot_manual_checks": "Manual Pre-launch Checks",
+        "vps_pilot_manual_checks_text": "Check the DB path, data freshness, no DB writes, no systemd/VPS changes, and no impact on the production autoscan.",
+        "vps_pilot_limits": "Limits",
+        "vps_pilot_limits_text": "No changes to auto_scan.py, database.py, scoring.py, sensors/, DB structure, VPS/systemd, APIs, autotrading, or real money.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "News, Events, and Narrative Context",
         "news_event_status": "Source Status",
@@ -1339,6 +1357,17 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
     </section>
     """
+    vps_pilot_checklist_html = f"""
+    <section class="dashboard-section" id="vps-pilot-checklist">
+        <h2 class="section-title">{texts["vps_pilot_checklist"]}</h2>
+        <div class="card">
+            <div><b>{texts["vps_pilot_status"]}:</b> {texts["vps_pilot_status_text"]}</div>
+            <div><b>{texts["vps_pilot_data_path"]}:</b> {texts["vps_pilot_data_path_text"]}</div>
+            <div><b>{texts["vps_pilot_manual_checks"]}:</b> {texts["vps_pilot_manual_checks_text"]}</div>
+            <div class="note"><b>{texts["vps_pilot_limits"]}:</b> {texts["vps_pilot_limits_text"]}</div>
+        </div>
+    </section>
+    """
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -1762,6 +1791,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         + dashboard_nav_html
         + release_checkpoint_html
         + deployment_readiness_html
+        + vps_pilot_checklist_html
         + freshness_html
         + backtest_lab_html
         + checks_cards_html
