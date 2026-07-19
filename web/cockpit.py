@@ -69,6 +69,15 @@ TEXTS = {
         "vps_pilot_runbook_autoscan_text": "crypto-auto-scan.service и crypto-auto-scan.timer не останавливаются и не меняются.",
         "vps_pilot_runbook_decision": "Решение о запуске",
         "vps_pilot_runbook_decision_text": "Любой фактический запуск на VPS допускается только отдельным подтверждённым решением после ручной проверки.",
+        "controlled_pilot_plan": "Controlled VPS Read-only Pilot Plan",
+        "controlled_pilot_status": "Статус подготовки",
+        "controlled_pilot_status_text": "Готовится только план первого supervised launch. Фактический запуск сейчас не выполняется.",
+        "controlled_pilot_go_nogo": "Go / No-Go решение",
+        "controlled_pilot_go_nogo_text": "Перед запуском нужно отдельно подтвердить DB_PATH, доступность базы на чтение, SELECT-only режим, порт, доступ, остановку и откат.",
+        "controlled_pilot_autoscan": "Контроль автосканера",
+        "controlled_pilot_autoscan_text": "crypto-auto-scan.service и crypto-auto-scan.timer должны продолжать работать и не должны изменяться.",
+        "controlled_pilot_stats": "Контроль статистики",
+        "controlled_pilot_stats_text": "Свежесть VPS-базы, последние идеи, price_checks, pairs и watchlist/fallback контролируются в чате статистики / эксплуатации.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "Новости, события и narrative-контекст",
         "news_event_status": "Статус источника",
@@ -260,6 +269,15 @@ TEXTS = {
         "vps_pilot_runbook_autoscan_text": "crypto-auto-scan.service and crypto-auto-scan.timer are not stopped or changed.",
         "vps_pilot_runbook_decision": "Launch Decision",
         "vps_pilot_runbook_decision_text": "Any actual VPS launch is allowed only after a separate confirmed decision and manual verification.",
+        "controlled_pilot_plan": "Controlled VPS Read-only Pilot Plan",
+        "controlled_pilot_status": "Preparation Status",
+        "controlled_pilot_status_text": "Only the first supervised launch plan is prepared. The actual launch is not performed now.",
+        "controlled_pilot_go_nogo": "Go / No-Go Decision",
+        "controlled_pilot_go_nogo_text": "Before launch, separately confirm DB_PATH, read access to the database, SELECT-only mode, port, access, stop procedure, and rollback.",
+        "controlled_pilot_autoscan": "Autoscan Control",
+        "controlled_pilot_autoscan_text": "crypto-auto-scan.service and crypto-auto-scan.timer must continue running and must not be changed.",
+        "controlled_pilot_stats": "Statistics Control",
+        "controlled_pilot_stats_text": "VPS database freshness, latest ideas, price_checks, pairs, and watchlist/fallback are controlled in the statistics / operations chat.",
         "news_event": "News / Event + Narrative Layer v0.1",
         "news_event_summary": "News, Events, and Narrative Context",
         "news_event_status": "Source Status",
@@ -1431,6 +1449,17 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         </div>
     </section>
     """
+    controlled_pilot_plan_html = f"""
+    <section class="dashboard-section" id="controlled-pilot-plan">
+        <h2 class="section-title">{texts["controlled_pilot_plan"]}</h2>
+        <div class="card">
+            <div><b>{texts["controlled_pilot_status"]}:</b> {texts["controlled_pilot_status_text"]}</div>
+            <div><b>{texts["controlled_pilot_go_nogo"]}:</b> {texts["controlled_pilot_go_nogo_text"]}</div>
+            <div><b>{texts["controlled_pilot_autoscan"]}:</b> {texts["controlled_pilot_autoscan_text"]}</div>
+            <div class="note"><b>{texts["controlled_pilot_stats"]}:</b> {texts["controlled_pilot_stats_text"]}</div>
+        </div>
+    </section>
+    """
     cards_html = f"""
     <div class="cards">
         <div class="card">
@@ -1857,6 +1886,7 @@ def render_dashboard(selected_idea: dict | None = None, lang: str = "ru") -> str
         + vps_pilot_checklist_html
         + manual_data_path_html
         + vps_pilot_runbook_html
+        + controlled_pilot_plan_html
         + freshness_html
         + backtest_lab_html
         + checks_cards_html
