@@ -26,33 +26,41 @@ def print_line():
 
 
 def get_lifecycle_status(checks):
-    change_6h = checks.get("6h")
-    change_24h = checks.get("24h")
+    ch6 = checks.get("6h")
+    ch24 = checks.get("24h")
 
-    if change_24h is None:
+    if ch24 is None:
         return "WAITING_24H"
 
-    if change_6h is None:
-        return "WAITING_6H"
+    if ch24 <= 0:
+        return "WEAK_24H"
 
-    if change_6h > 0 and change_24h > 0:
-        return "CONFIRMED_6H_24H"
+    if ch6 is not None and ch6 > 30:
+        return "PUMP_RISK"
 
-    if change_6h <= 0 and change_24h > 0:
+    if ch24 > 15:
+        return "PUMP_RISK"
+
+    if ch6 is not None and ch6 > 0 and ch24 > 0:
+        return "CONFIRMED_STABLE"
+
+    if ch24 > 0:
         return "RECOVERED_24H"
 
-    return "WEAK_24H"
+    return "UNKNOWN"
 
 
 def get_lifecycle_meaning(status):
     meanings = {
-        "CONFIRMED_6H_24H": "strong_watch / сильное наблюдение",
-        "RECOVERED_24H": "cautious_watch / осторожное наблюдение",
+        "CONFIRMED_STABLE": "stable_confirmation / стабильное подтверждение",
+        "PUMP_RISK": "high_momentum_risk / риск пампа",
+        "RECOVERED_24H": "cautious_watch / восстановление после слабости",
         "WEAK_24H": "weak_candidate / early_reject / слабая идея",
         "WAITING_24H": "ожидается 24h проверка",
-        "WAITING_6H": "ожидается 6h проверка",
+        "WAITING_7D": "ожидается 7d проверка",
+        "UNKNOWN": "неопределённый статус",
     }
-    return meanings.get(status, "unknown")
+    return meanings.get(status, "неопределённый статус")
 
 
 def load_lifecycle_rows():
