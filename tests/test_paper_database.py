@@ -945,6 +945,8 @@ class AutoCheckIsolationTest(unittest.TestCase):
 
         with patch("auto_check_all.get_pairs_for_next_checks", return_value=[]), \
              patch("paper_engine.run_cycle", fail_cycle), \
+             patch("paper_portfolio.ensure_portfolio"), \
+             patch("paper_portfolio.sync_portfolio"), \
              patch("sys.stdout", output):
             auto_check_all.main()
 

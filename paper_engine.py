@@ -600,4 +600,24 @@ def run_cycle(now=None, price_fetcher=None, db_path=None, new_24h_pair_ids=None)
 
 
 if __name__ == "__main__":
-    run_cycle()
+    from paper_portfolio import ensure_portfolio, sync_portfolio
+
+    current_time = utc_now()
+
+    try:
+        ensure_portfolio(current_time)
+    except Exception as error:
+        print("PAPER PORTFOLIO: ошибка инициализации, paper engine продолжит работу")
+        print(error)
+
+    try:
+        run_cycle(now=current_time)
+    except Exception as error:
+        print("PAPER ENGINE: ошибка, проверки цены уже завершены")
+        print(error)
+
+    try:
+        sync_portfolio(current_time)
+    except Exception as error:
+        print("PAPER PORTFOLIO: ошибка синхронизации, paper engine уже завершён")
+        print(error)

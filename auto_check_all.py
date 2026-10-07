@@ -130,14 +130,36 @@ def main():
     print("Пары без свежих данных:", data_not_found_count)
     print("Ошибок проверки:", failed_count)
 
-    try:
-        from paper_engine import run_cycle
+    now = None
 
-        run_cycle(new_24h_pair_ids=new_24h_pair_ids)
+    try:
+        from paper_engine import run_cycle, utc_now
+        from paper_portfolio import ensure_portfolio, sync_portfolio
+
+        now = utc_now()
+
+        try:
+            ensure_portfolio(now)
+        except Exception as error:
+            print()
+            print("PAPER PORTFOLIO: ошибка инициализации, paper engine продолжит работу")
+            print(error)
+
+        run_cycle(now=now, new_24h_pair_ids=new_24h_pair_ids)
     except Exception as error:
         print()
         print("PAPER ENGINE: ошибка, проверки цены уже завершены")
         print(error)
+
+    if now is not None:
+        try:
+            from paper_portfolio import sync_portfolio
+
+            sync_portfolio(now)
+        except Exception as error:
+            print()
+            print("PAPER PORTFOLIO: ошибка синхронизации, paper engine уже завершён")
+            print(error)
 
 
 if __name__ == "__main__":
