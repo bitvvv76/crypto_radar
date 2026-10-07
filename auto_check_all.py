@@ -107,6 +107,15 @@ def main():
     print("Пары без свежих данных:", data_not_found_count)
     print("Ошибок проверки:", failed_count)
 
+    try:
+        from paper_engine import run_cycle
+
+        run_cycle()
+    except Exception as error:
+        print()
+        print("PAPER ENGINE: ошибка, проверки цены уже завершены")
+        print(error)
+
 
 if __name__ == "__main__":
     main()
