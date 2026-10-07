@@ -631,3 +631,535 @@ def remove_from_watchlist(pair_id):
 
     return removed
 
+
+def get_paper_connection(db_path=None):
+    connection = sqlite3.connect(db_path or DB_NAME)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def _paper_row(row):
+    if row is None:
+        return None
+
+    return {key: row[key] for key in row.keys()}
+
+
+def ensure_paper_tables(db_path=None):
+    """
+    Create paper tables on a clean database.
+
+    paper_positions matches the existing VPS table. CREATE TABLE IF NOT EXISTS
+    leaves that table untouched: no ALTER and no migration.
+    """
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS paper_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_id INTEGER UNIQUE,
+            strategy_version TEXT,
+            signal_type TEXT,
+            final_score INTEGER,
+            change_24h REAL,
+            status TEXT,
+            entry_price REAL,
+            entry_time TIMESTAMP,
+            last_price REAL,
+            last_checked_at TIMESTAMP,
+            max_price REAL,
+            max_profit_percent REAL,
+            drawdown_from_max_percent REAL,
+            stop_loss_percent REAL,
+            trailing_start_percent REAL,
+            trailing_distance_percent REAL,
+            max_hold_hours INTEGER,
+            exit_price REAL,
+            exit_time TIMESTAMP,
+            exit_reason TEXT,
+            result_percent REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS paper_price_marks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair_id INTEGER NOT NULL,
+            price_usd REAL NOT NULL,
+            observed_at TIMESTAMP NOT NULL,
+            profit_percent_from_entry REAL,
+            observation_bucket TEXT NOT NULL,
+            UNIQUE (pair_id, observation_bucket),
+            FOREIGN KEY (pair_id) REFERENCES paper_positions (pair_id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_paper_price_marks_pair_observed
+        ON paper_price_marks (pair_id, observed_at)
+    """)
+
+    connection.commit()
+    connection.close()
+
+
+def get_24h_paper_candidates_for_pairs(
+    pair_ids,
+    min_final_score,
+    db_path=None,
+):
+    if not pair_ids:
+        return []
+
+    placeholders = ", ".join("?" for _ in pair_ids)
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            p.id AS pair_id,
+            p.final_score,
+            p.chain_id,
+            p.pair_address,
+            p.pair_symbol,
+            pc.price_change_percent AS change_24h,
+            pc.new_price_usd AS entry_price,
+            pc.checked_at AS entry_time
+        FROM pairs AS p
+        JOIN price_checks AS pc
+            ON pc.pair_id = p.id
+           AND pc.check_period = '24h'
+        LEFT JOIN paper_positions AS pp
+            ON pp.pair_id = p.id
+        WHERE pp.id IS NULL
+          AND p.final_score >= ?
+          AND p.id IN ({placeholders})
+          AND pc.price_change_percent IS NOT NULL
+          AND pc.new_price_usd > 0
+          AND pc.id = (
+              SELECT pc2.id
+              FROM price_checks AS pc2
+              WHERE pc2.pair_id = p.id
+                AND pc2.check_period = '24h'
+              ORDER BY pc2.checked_at ASC, pc2.id ASC
+              LIMIT 1
+          )
+        ORDER BY p.id ASC
+    """.format(placeholders=placeholders), (
+        min_final_score,
+        *pair_ids,
+    ))
+
+    rows = [_paper_row(row) for row in cursor.fetchall()]
+    connection.close()
+
+    return rows
+
+
+def open_baseline_position(
+    pair_id,
+    strategy_version,
+    signal_type,
+    final_score,
+    change_24h,
+    entry_price,
+    entry_time,
+    observation_bucket,
+    stop_loss_percent,
+    trailing_start_percent,
+    trailing_distance_percent,
+    max_hold_hours,
+    created_at,
+    db_path=None,
+):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT INTO paper_positions (
+                pair_id,
+                strategy_version,
+                signal_type,
+                final_score,
+                change_24h,
+                status,
+                entry_price,
+                entry_time,
+                last_price,
+                last_checked_at,
+                max_price,
+                max_profit_percent,
+                drawdown_from_max_percent,
+                stop_loss_percent,
+                trailing_start_percent,
+                trailing_distance_percent,
+                max_hold_hours,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
+        """, (
+            pair_id,
+            strategy_version,
+            signal_type,
+            final_score,
+            change_24h,
+            entry_price,
+            entry_time,
+            entry_price,
+            entry_time,
+            entry_price,
+            stop_loss_percent,
+            trailing_start_percent,
+            trailing_distance_percent,
+            max_hold_hours,
+            created_at,
+            created_at,
+        ))
+
+        cursor.execute("""
+            INSERT INTO paper_price_marks (
+                pair_id,
+                price_usd,
+                observed_at,
+                profit_percent_from_entry,
+                observation_bucket
+            )
+            VALUES (?, ?, ?, 0, ?)
+        """, (
+            pair_id,
+            entry_price,
+            entry_time,
+            observation_bucket,
+        ))
+    except sqlite3.IntegrityError:
+        connection.rollback()
+        connection.close()
+        return False
+
+    connection.commit()
+    connection.close()
+
+    return True
+
+
+def get_paper_position(pair_id, db_path=None):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT *
+        FROM paper_positions
+        WHERE pair_id = ?
+        LIMIT 1
+    """, (pair_id,))
+
+    row = _paper_row(cursor.fetchone())
+    connection.close()
+
+    return row
+
+
+def get_active_tracking_positions(now_text, db_path=None):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            pp.id,
+            pp.pair_id,
+            pp.strategy_version,
+            pp.signal_type,
+            pp.final_score,
+            pp.change_24h,
+            pp.status,
+            pp.entry_price,
+            pp.entry_time,
+            pp.last_price,
+            pp.last_checked_at,
+            pp.max_price,
+            pp.max_profit_percent,
+            pp.drawdown_from_max_percent,
+            pp.stop_loss_percent,
+            pp.trailing_start_percent,
+            pp.trailing_distance_percent,
+            pp.max_hold_hours,
+            pp.exit_price,
+            pp.exit_time,
+            pp.exit_reason,
+            pp.result_percent,
+            p.chain_id,
+            p.pair_address,
+            p.pair_symbol
+        FROM paper_positions AS pp
+        JOIN pairs AS p ON p.id = pp.pair_id
+        WHERE datetime(pp.entry_time, '+' || pp.max_hold_hours || ' hours')
+              >= datetime(?)
+        ORDER BY pp.id ASC
+    """, (now_text,))
+
+    rows = [_paper_row(row) for row in cursor.fetchall()]
+    connection.close()
+
+    return rows
+
+
+def get_expired_open_positions(now_text, db_path=None):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT *
+        FROM paper_positions
+        WHERE status = 'OPEN'
+          AND datetime(entry_time, '+' || max_hold_hours || ' hours')
+              < datetime(?)
+        ORDER BY id ASC
+    """, (now_text,))
+
+    rows = [_paper_row(row) for row in cursor.fetchall()]
+    connection.close()
+
+    return rows
+
+
+def mark_exists(pair_id, observation_bucket, db_path=None):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT id
+        FROM paper_price_marks
+        WHERE pair_id = ?
+          AND observation_bucket = ?
+        LIMIT 1
+    """, (
+        pair_id,
+        observation_bucket,
+    ))
+
+    row = cursor.fetchone()
+    connection.close()
+
+    return row is not None
+
+
+def insert_price_mark(
+    pair_id,
+    price_usd,
+    observed_at,
+    profit_percent_from_entry,
+    observation_bucket,
+    baseline_update=None,
+    db_path=None,
+):
+    """
+    Insert one observation.
+
+    baseline_update is applied in the same transaction only when the insert
+    creates a new row and the baseline position is still OPEN.
+    """
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT OR IGNORE INTO paper_price_marks (
+                pair_id,
+                price_usd,
+                observed_at,
+                profit_percent_from_entry,
+                observation_bucket
+            )
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            pair_id,
+            price_usd,
+            observed_at,
+            profit_percent_from_entry,
+            observation_bucket,
+        ))
+
+        inserted = connection.execute("SELECT changes()").fetchone()[0] == 1
+
+        if inserted and baseline_update is not None:
+            _apply_baseline_update(cursor, baseline_update)
+    except sqlite3.IntegrityError:
+        connection.rollback()
+        connection.close()
+        return False
+
+    connection.commit()
+    connection.close()
+
+    return inserted
+
+
+def _apply_baseline_update(cursor, baseline_update):
+    action = baseline_update["action"]
+    position_id = baseline_update["position_id"]
+
+    if action == "update":
+        cursor.execute("""
+            UPDATE paper_positions
+            SET
+                last_price = ?,
+                last_checked_at = ?,
+                max_price = ?,
+                max_profit_percent = ?,
+                drawdown_from_max_percent = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = 'OPEN'
+        """, (
+            baseline_update["last_price"],
+            baseline_update["last_checked_at"],
+            baseline_update["max_price"],
+            baseline_update["max_profit_percent"],
+            baseline_update["drawdown_from_max_percent"],
+            baseline_update["updated_at"],
+            position_id,
+        ))
+        return
+
+    if action == "close":
+        cursor.execute("""
+            UPDATE paper_positions
+            SET
+                status = 'CLOSED',
+                last_price = ?,
+                last_checked_at = ?,
+                max_price = ?,
+                max_profit_percent = ?,
+                drawdown_from_max_percent = ?,
+                exit_price = ?,
+                exit_time = ?,
+                exit_reason = ?,
+                result_percent = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = 'OPEN'
+        """, (
+            baseline_update["last_price"],
+            baseline_update["last_checked_at"],
+            baseline_update["max_price"],
+            baseline_update["max_profit_percent"],
+            baseline_update["drawdown_from_max_percent"],
+            baseline_update["exit_price"],
+            baseline_update["exit_time"],
+            baseline_update["exit_reason"],
+            baseline_update["result_percent"],
+            baseline_update["updated_at"],
+            position_id,
+        ))
+
+
+def close_open_baseline(
+    position_id,
+    last_price,
+    last_checked_at,
+    max_price,
+    max_profit_percent,
+    drawdown_from_max_percent,
+    exit_price,
+    exit_time,
+    exit_reason,
+    result_percent,
+    updated_at,
+    db_path=None,
+):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        UPDATE paper_positions
+        SET
+            status = 'CLOSED',
+            last_price = ?,
+            last_checked_at = ?,
+            max_price = ?,
+            max_profit_percent = ?,
+            drawdown_from_max_percent = ?,
+            exit_price = ?,
+            exit_time = ?,
+            exit_reason = ?,
+            result_percent = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'OPEN'
+    """, (
+        last_price,
+        last_checked_at,
+        max_price,
+        max_profit_percent,
+        drawdown_from_max_percent,
+        exit_price,
+        exit_time,
+        exit_reason,
+        result_percent,
+        updated_at,
+        position_id,
+    ))
+
+    closed = cursor.rowcount > 0
+    connection.commit()
+    connection.close()
+
+    return closed
+
+
+def get_price_marks(pair_id, db_path=None):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            pair_id,
+            price_usd,
+            observed_at,
+            profit_percent_from_entry,
+            observation_bucket
+        FROM paper_price_marks
+        WHERE pair_id = ?
+        ORDER BY observed_at ASC, id ASC
+    """, (pair_id,))
+
+    rows = [_paper_row(row) for row in cursor.fetchall()]
+    connection.close()
+
+    return rows
+
+
+def get_last_mark_within_window(pair_id, deadline_text, db_path=None):
+    connection = get_paper_connection(db_path)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            pair_id,
+            price_usd,
+            observed_at,
+            profit_percent_from_entry,
+            observation_bucket
+        FROM paper_price_marks
+        WHERE pair_id = ?
+          AND observed_at <= ?
+        ORDER BY observed_at DESC, id DESC
+        LIMIT 1
+    """, (
+        pair_id,
+        deadline_text,
+    ))
+
+    row = _paper_row(cursor.fetchone())
+    connection.close()
+
+    return row
+

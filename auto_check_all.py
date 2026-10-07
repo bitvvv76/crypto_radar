@@ -13,6 +13,25 @@ from check_utils import (
 )
 
 
+def _is_newly_created_24h_check(result):
+    if not isinstance(result, dict):
+        return False
+
+    if result.get("status"):
+        return False
+
+    if result.get("check_period") != "24h":
+        return False
+
+    if result.get("already_checked"):
+        return False
+
+    if result.get("price_change_percent") is None:
+        return False
+
+    return True
+
+
 def main():
     print("CRYPTO RADAR — АВТОПРОВЕРКА ВСЕЙ ОЧЕРЕДИ")
     print("==========================================")
@@ -24,6 +43,7 @@ def main():
     waiting_count = 0
     data_not_found_count = 0
     failed_count = 0
+    new_24h_pair_ids = []
 
     for pair in pairs:
         (
@@ -95,6 +115,9 @@ def main():
         print("Новая цена:", result["new_price_usd"])
         print("Изменение цены %:", result["price_change_percent"])
 
+        if _is_newly_created_24h_check(result):
+            new_24h_pair_ids.append(pair_id)
+
         checked_count += 1
 
     print()
@@ -106,6 +129,15 @@ def main():
     print("Ещё не наступил срок:", waiting_count)
     print("Пары без свежих данных:", data_not_found_count)
     print("Ошибок проверки:", failed_count)
+
+    try:
+        from paper_engine import run_cycle
+
+        run_cycle(new_24h_pair_ids=new_24h_pair_ids)
+    except Exception as error:
+        print()
+        print("PAPER ENGINE: ошибка, проверки цены уже завершены")
+        print(error)
 
 
 if __name__ == "__main__":
