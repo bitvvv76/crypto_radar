@@ -707,12 +707,15 @@ def ensure_paper_tables(db_path=None):
     connection.close()
 
 
-def get_fresh_24h_paper_candidates(
+def get_24h_paper_candidates_for_pairs(
+    pair_ids,
     min_final_score,
-    checked_from,
-    checked_to,
     db_path=None,
 ):
+    if not pair_ids:
+        return []
+
+    placeholders = ", ".join("?" for _ in pair_ids)
     connection = get_paper_connection(db_path)
     cursor = connection.cursor()
 
@@ -734,10 +737,9 @@ def get_fresh_24h_paper_candidates(
             ON pp.pair_id = p.id
         WHERE pp.id IS NULL
           AND p.final_score >= ?
+          AND p.id IN ({placeholders})
           AND pc.price_change_percent IS NOT NULL
           AND pc.new_price_usd > 0
-          AND pc.checked_at >= ?
-          AND pc.checked_at <= ?
           AND pc.id = (
               SELECT pc2.id
               FROM price_checks AS pc2
@@ -747,10 +749,9 @@ def get_fresh_24h_paper_candidates(
               LIMIT 1
           )
         ORDER BY p.id ASC
-    """, (
+    """.format(placeholders=placeholders), (
         min_final_score,
-        checked_from,
-        checked_to,
+        *pair_ids,
     ))
 
     rows = [_paper_row(row) for row in cursor.fetchall()]

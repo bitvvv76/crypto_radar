@@ -5,7 +5,7 @@ from database import (
     ensure_paper_tables,
     get_active_tracking_positions,
     get_expired_open_positions,
-    get_fresh_24h_paper_candidates,
+    get_24h_paper_candidates_for_pairs,
     get_last_mark_within_window,
     insert_price_mark,
     mark_exists,
@@ -301,11 +301,8 @@ def default_price_fetcher(chain_id, pair_address):
     return normalize_price(fresh_pair.get("priceUsd"))
 
 
-def _candidate_allowed(candidate, now):
+def _candidate_allowed(candidate):
     if score_cohort(candidate.get("final_score")) is None:
-        return False
-
-    if not is_fresh_24h(candidate.get("entry_time"), now):
         return False
 
     if classify_signal_type(candidate.get("change_24h")) is None:
@@ -317,15 +314,15 @@ def _candidate_allowed(candidate, now):
     return True
 
 
-def _open_new_positions(now, db_path, stats):
+def _open_new_positions(now, db_path, stats, new_24h_pair_ids):
     now_text = format_datetime(now)
-    checked_from = format_datetime(
-        parse_datetime(now) - timedelta(minutes=ENTRY_GRACE_MINUTES)
-    )
-    candidates = get_fresh_24h_paper_candidates(
+
+    if not new_24h_pair_ids:
+        return set()
+
+    candidates = get_24h_paper_candidates_for_pairs(
+        pair_ids=list(new_24h_pair_ids),
         min_final_score=MIN_FINAL_SCORE,
-        checked_from=checked_from,
-        checked_to=now_text,
         db_path=db_path,
     )
     opened_pair_ids = set()
@@ -334,7 +331,7 @@ def _open_new_positions(now, db_path, stats):
         pair_id = candidate["pair_id"]
 
         try:
-            if not _candidate_allowed(candidate, now):
+            if not _candidate_allowed(candidate):
                 continue
 
             entry_price = normalize_price(candidate["entry_price"])
@@ -572,12 +569,15 @@ def _print_cycle_summary(stats):
     print("Нет свежей цены:", stats["price_missing"])
 
 
-def run_cycle(now=None, price_fetcher=None, db_path=None):
+def run_cycle(now=None, price_fetcher=None, db_path=None, new_24h_pair_ids=None):
     if now is None:
         now = utc_now()
 
     if price_fetcher is None:
         price_fetcher = default_price_fetcher
+
+    if new_24h_pair_ids is None:
+        new_24h_pair_ids = []
 
     stats = empty_cycle_stats()
 
@@ -585,7 +585,7 @@ def run_cycle(now=None, price_fetcher=None, db_path=None):
     print("============================")
 
     ensure_paper_tables(db_path)
-    opened_pair_ids = _open_new_positions(now, db_path, stats)
+    opened_pair_ids = _open_new_positions(now, db_path, stats, new_24h_pair_ids)
     _track_active_positions(
         now,
         price_fetcher,

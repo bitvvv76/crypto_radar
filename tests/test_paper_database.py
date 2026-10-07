@@ -2,7 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from unittest.mock import patch
 
@@ -159,6 +159,30 @@ class PaperDatabaseTest(unittest.TestCase):
         connection.commit()
         connection.close()
 
+    def insert_period(self, pair_id, check_period, new_price, change_percent, checked_at, old_price=1):
+        connection = sqlite3.connect(self.db_path)
+        cursor = connection.cursor()
+        cursor.execute("""
+            INSERT INTO price_checks (
+                pair_id,
+                check_period,
+                old_price_usd,
+                new_price_usd,
+                price_change_percent,
+                checked_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            pair_id,
+            check_period,
+            old_price,
+            new_price,
+            change_percent,
+            format_datetime(checked_at),
+        ))
+        connection.commit()
+        connection.close()
+
     def open_at(self, pair_id, entry_time, entry_price=1, change_24h=4, final_score=80):
         created = open_baseline_position(
             pair_id=pair_id,
@@ -241,6 +265,7 @@ class PaperDatabaseTest(unittest.TestCase):
             now=checked_at + timedelta(minutes=10),
             price_fetcher=fetcher,
             db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
         )
 
         position = get_paper_position(pair_id, db_path=self.db_path)
@@ -282,6 +307,7 @@ class PaperDatabaseTest(unittest.TestCase):
             now=now,
             price_fetcher=lambda chain_id, pair_address: 2,
             db_path=self.db_path,
+            new_24h_pair_ids=[low_score_id],
         )
 
         self.assertEqual(stats["opened"], 0)
@@ -292,8 +318,18 @@ class PaperDatabaseTest(unittest.TestCase):
         pair_id = self.insert_pair("pair-control", 70, ENTRY - timedelta(hours=24))
         self.insert_24h(pair_id, 1.02, 2, ENTRY)
 
-        first = run_cycle(now=ENTRY, price_fetcher=lambda *args: 5, db_path=self.db_path)
-        second = run_cycle(now=ENTRY, price_fetcher=lambda *args: 5, db_path=self.db_path)
+        first = run_cycle(
+            now=ENTRY,
+            price_fetcher=lambda *args: 5,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
+        second = run_cycle(
+            now=ENTRY,
+            price_fetcher=lambda *args: 5,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
         position = get_paper_position(pair_id, db_path=self.db_path)
 
         self.assertEqual(first["opened"], 1)
@@ -305,7 +341,12 @@ class PaperDatabaseTest(unittest.TestCase):
     def test_repeat_cycle_in_same_bucket_ignores_new_mock_price(self):
         pair_id = self.insert_pair("pair-bucket", 85, ENTRY - timedelta(hours=24))
         self.insert_24h(pair_id, 1, 4, ENTRY)
-        run_cycle(now=ENTRY, price_fetcher=lambda *args: 9, db_path=self.db_path)
+        run_cycle(
+            now=ENTRY,
+            price_fetcher=lambda *args: 9,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
 
         observed_at = ENTRY + timedelta(minutes=15)
         calls = []
@@ -406,7 +447,12 @@ class PaperDatabaseTest(unittest.TestCase):
     def test_missing_price_does_not_create_mark(self):
         pair_id = self.insert_pair("pair-missing", 80, ENTRY - timedelta(hours=24))
         self.insert_24h(pair_id, 1, 4, ENTRY)
-        run_cycle(now=ENTRY, price_fetcher=lambda *args: None, db_path=self.db_path)
+        run_cycle(
+            now=ENTRY,
+            price_fetcher=lambda *args: None,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
         before = get_paper_position(pair_id, db_path=self.db_path)
 
         stats = run_cycle(
@@ -425,7 +471,12 @@ class PaperDatabaseTest(unittest.TestCase):
     def test_closed_baseline_keeps_receiving_marks_until_window_end(self):
         pair_id = self.insert_pair("pair-closed", 88, ENTRY - timedelta(hours=24))
         self.insert_24h(pair_id, 1, 4, ENTRY)
-        run_cycle(now=ENTRY, price_fetcher=lambda *args: 1, db_path=self.db_path)
+        run_cycle(
+            now=ENTRY,
+            price_fetcher=lambda *args: 1,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
 
         stop_at = ENTRY + timedelta(minutes=15)
         run_cycle(now=stop_at, price_fetcher=lambda *args: 0.8, db_path=self.db_path)
@@ -595,7 +646,12 @@ class PaperDatabaseTest(unittest.TestCase):
                 return current_price
 
             if moment == ENTRY:
-                run_cycle(now=moment, price_fetcher=fetcher, db_path=self.db_path)
+                run_cycle(
+                    now=moment,
+                    price_fetcher=fetcher,
+                    db_path=self.db_path,
+                    new_24h_pair_ids=[pair_id],
+                )
             else:
                 run_cycle(
                     now=moment,
@@ -678,6 +734,204 @@ class PaperDatabaseTest(unittest.TestCase):
         self.assertEqual(stored["status"], "CLOSED")
         self.assertEqual(stored["exit_reason"], EXIT_STOP_LOSS)
         self.assertEqual(stored["exit_price"], 0.8)
+
+    def test_explicit_24h_opens_after_more_than_30_minutes(self):
+        checked_at = ENTRY
+        now = ENTRY + timedelta(minutes=45)
+        pair_id = self.insert_pair("pair-late", 84, checked_at - timedelta(hours=24))
+        self.insert_24h(pair_id, new_price=1.04, change_percent=4, checked_at=checked_at)
+
+        def fetcher(chain_id, pair_address):
+            raise AssertionError("вход не запрашивает DEX Screener")
+
+        stats = run_cycle(
+            now=now,
+            price_fetcher=fetcher,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
+        position = get_paper_position(pair_id, db_path=self.db_path)
+
+        self.assertGreater(now - checked_at, timedelta(minutes=30))
+        self.assertEqual(stats["opened"], 1)
+        self.assertEqual(position["entry_price"], 1.04)
+        self.assertEqual(position["entry_time"], format_datetime(checked_at))
+        self.assertEqual(position["status"], "OPEN")
+
+    def test_old_24h_from_previous_run_does_not_open(self):
+        pair_id = self.insert_pair("pair-previous", 96, ENTRY - timedelta(days=2))
+        self.insert_24h(pair_id, new_price=1.2, change_percent=20, checked_at=ENTRY)
+
+        stats = run_cycle(
+            now=ENTRY + timedelta(minutes=5),
+            price_fetcher=lambda *args: 9,
+            db_path=self.db_path,
+            new_24h_pair_ids=[],
+        )
+
+        self.assertEqual(stats["opened"], 0)
+        self.assertIsNone(get_paper_position(pair_id, db_path=self.db_path))
+
+    def test_explicit_pair_without_24h_check_does_not_open(self):
+        pair_id = self.insert_pair("pair-no-24h", 90, ENTRY)
+        self.insert_period(pair_id, "1h", 1.01, 1, ENTRY)
+
+        stats = run_cycle(
+            now=ENTRY + timedelta(minutes=50),
+            price_fetcher=lambda *args: 3,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
+
+        self.assertEqual(stats["opened"], 0)
+        self.assertIsNone(get_paper_position(pair_id, db_path=self.db_path))
+        self.assertEqual(get_price_marks(pair_id, db_path=self.db_path), [])
+
+    def test_repeat_explicit_pair_id_does_not_duplicate(self):
+        pair_id = self.insert_pair("pair-repeat", 82, ENTRY - timedelta(hours=24))
+        self.insert_24h(pair_id, new_price=1.03, change_percent=3, checked_at=ENTRY)
+
+        calls = []
+
+        def fetch(chain_id, pair_address):
+            calls.append(0.1)
+            return 0.1
+
+        first = run_cycle(
+            now=ENTRY,
+            price_fetcher=fetch,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
+        second = run_cycle(
+            now=ENTRY,
+            price_fetcher=fetch,
+            db_path=self.db_path,
+            new_24h_pair_ids=[pair_id],
+        )
+        marks = get_price_marks(pair_id, db_path=self.db_path)
+        position = get_paper_position(pair_id, db_path=self.db_path)
+
+        self.assertEqual(first["opened"], 1)
+        self.assertEqual(second["opened"], 0)
+        self.assertEqual(calls, [])
+        self.assertEqual(len(marks), 1)
+        self.assertEqual(position["status"], "OPEN")
+        self.assertEqual(position["entry_price"], 1.03)
+        self.assertIsNone(position["exit_reason"])
+
+    def test_long_auto_check_passes_only_new_24h_and_still_opens(self):
+        import auto_check_all
+        from paper_engine import run_cycle as real_run_cycle
+
+        wall_now = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        new_pair_id = self.insert_pair(
+            "pair-batch-24h",
+            85,
+            wall_now - timedelta(hours=30),
+        )
+        self.insert_period(new_pair_id, "1h", 1.01, 1, wall_now - timedelta(hours=29))
+        self.insert_period(new_pair_id, "6h", 1.02, 2, wall_now - timedelta(hours=24))
+
+        hour_pair_id = self.insert_pair(
+            "pair-batch-1h",
+            80,
+            wall_now - timedelta(hours=2),
+        )
+        previous_pair_id = self.insert_pair(
+            "pair-batch-old",
+            95,
+            wall_now - timedelta(days=3),
+        )
+        self.insert_period(previous_pair_id, "1h", 1.1, 10, wall_now - timedelta(days=3))
+        self.insert_period(previous_pair_id, "6h", 1.1, 10, wall_now - timedelta(days=3))
+        self.insert_24h(
+            previous_pair_id,
+            new_price=1.3,
+            change_percent=30,
+            checked_at=wall_now - timedelta(days=2),
+        )
+        already_pair_id = self.insert_pair(
+            "pair-batch-already",
+            90,
+            wall_now - timedelta(hours=30),
+        )
+        self.insert_period(already_pair_id, "1h", 1.01, 1, wall_now - timedelta(hours=29))
+        self.insert_period(already_pair_id, "6h", 1.02, 2, wall_now - timedelta(hours=24))
+
+        checked_at_holder = {}
+
+        def fake_check(pair_id, check_period, return_error=False):
+            if pair_id == already_pair_id:
+                return {
+                    "pair_id": pair_id,
+                    "pair_symbol": "ALREADY/USDC",
+                    "check_period": check_period,
+                    "old_price_usd": 1,
+                    "new_price_usd": 1.5,
+                    "price_change_percent": None,
+                    "already_checked": True,
+                }
+
+            if pair_id == new_pair_id and check_period == "24h":
+                checked_at = wall_now - timedelta(minutes=45)
+                checked_at_holder["checked_at"] = format_datetime(checked_at)
+                self.insert_24h(new_pair_id, 1.04, 4, checked_at)
+                return {
+                    "pair_id": pair_id,
+                    "pair_symbol": "NEW/USDC",
+                    "check_period": "24h",
+                    "old_price_usd": 1,
+                    "new_price_usd": 1.04,
+                    "price_change_percent": 4,
+                    "already_checked": False,
+                }
+
+            if pair_id == hour_pair_id and check_period == "1h":
+                self.insert_period(hour_pair_id, "1h", 1.01, 1, wall_now)
+                return {
+                    "pair_id": pair_id,
+                    "pair_symbol": "HOUR/USDC",
+                    "check_period": "1h",
+                    "old_price_usd": 1,
+                    "new_price_usd": 1.01,
+                    "price_change_percent": 1,
+                    "already_checked": False,
+                }
+
+            raise AssertionError("неожиданная проверка {0} {1}".format(pair_id, check_period))
+
+        captured = {}
+
+        def spy_cycle(now=None, price_fetcher=None, db_path=None, new_24h_pair_ids=None):
+            captured["ids"] = list(new_24h_pair_ids or [])
+            return real_run_cycle(
+                now=now,
+                price_fetcher=price_fetcher,
+                db_path=db_path,
+                new_24h_pair_ids=new_24h_pair_ids,
+            )
+
+        with patch("auto_check_all.check_pair_price", side_effect=fake_check), \
+             patch("paper_engine.run_cycle", side_effect=spy_cycle):
+            auto_check_all.main()
+
+        position = get_paper_position(new_pair_id, db_path=self.db_path)
+
+        self.assertEqual(captured["ids"], [new_pair_id])
+        self.assertGreater(
+            datetime.now(timezone.utc).replace(tzinfo=None) - datetime.strptime(
+                position["entry_time"],
+                "%Y-%m-%d %H:%M:%S",
+            ),
+            timedelta(minutes=30),
+        )
+        self.assertEqual(position["entry_price"], 1.04)
+        self.assertEqual(position["entry_time"], checked_at_holder["checked_at"])
+        self.assertEqual(position["status"], "OPEN")
+        self.assertIsNone(get_paper_position(previous_pair_id, db_path=self.db_path))
+        self.assertIsNone(get_paper_position(hour_pair_id, db_path=self.db_path))
+        self.assertIsNone(get_paper_position(already_pair_id, db_path=self.db_path))
 
 
 class AutoCheckIsolationTest(unittest.TestCase):
