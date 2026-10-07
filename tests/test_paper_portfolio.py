@@ -21,6 +21,7 @@ from paper_portfolio import (
     RECOMMENDATION_BASELINE_BUY,
     SKIP_INSUFFICIENT_CASH,
     ensure_portfolio,
+    run_engine_with_portfolio,
     sync_portfolio,
 )
 
@@ -570,6 +571,116 @@ class PaperPortfolioTest(unittest.TestCase):
         self.assertIn("portfolio init boom", text)
         self.assertIn("ИТОГ PAPER ENGINE", text)
         self.assertNotIn("PAPER ENGINE: ошибка, проверки цены уже завершены", text)
+
+    def test_closed_baseline_is_not_bought_on_later_sync(self):
+        ensure_portfolio(ENTRY, db_path=self.db_path)
+        pair_id = self.insert_pair("pair-closed-before-sync")
+        position = self.open_position(pair_id, ENTRY, entry_price=1)
+        self.assertEqual(position["status"], "OPEN")
+        self.close_baseline(
+            position,
+            exit_price=1.5,
+            exit_time=ENTRY + timedelta(minutes=15),
+            result_percent=50,
+        )
+        ledger_before = self.ledger()
+
+        stats = sync_portfolio(ENTRY + timedelta(minutes=15), db_path=self.db_path)
+
+        self.assertEqual(stats["buys"], 0)
+        self.assertEqual(self.allocations(), [])
+        self.assertEqual(self.ledger(), ledger_before)
+        self.assertEqual(self.ledger("BUY"), [])
+        self.assertEqual(self.account()["cash_usd"], 10000)
+
+    def test_retry_ensure_uses_same_cycle_now_and_buys(self):
+        from paper_engine import run_cycle
+
+        cycle_now = ENTRY
+        pair_id = self.insert_pair("pair-retry", created_at=ENTRY - timedelta(hours=24))
+        self._insert_period(pair_id, "24h", ENTRY - timedelta(minutes=5))
+        attempts = []
+
+        def flaky_ensure(now=None, db_path=None):
+            attempts.append(now)
+            if len(attempts) == 1:
+                raise RuntimeError("first ensure failed")
+            return ensure_portfolio(now, db_path=db_path)
+
+        def run_cycle_call():
+            return run_cycle(
+                now=cycle_now,
+                price_fetcher=lambda chain_id, pair_address: None,
+                db_path=self.db_path,
+                new_24h_pair_ids=[pair_id],
+            )
+
+        with patch("paper_portfolio.ensure_portfolio", side_effect=flaky_ensure):
+            run_engine_with_portfolio(
+                cycle_now,
+                run_cycle_call,
+                db_path=self.db_path,
+            )
+
+        position = self.position_by_pair(pair_id)
+        allocation = self.allocation_for(position["id"])
+        account = self.account()
+
+        self.assertEqual(attempts, [cycle_now, cycle_now])
+        self.assertEqual(position["status"], "OPEN")
+        self.assertEqual(position["created_at"], format_datetime(cycle_now))
+        self.assertEqual(account["activated_at"], format_datetime(cycle_now))
+        self.assertEqual(len(self.ledger("DEPOSIT")), 1)
+        self.assertEqual(allocation["decision"], DECISION_AUTO_PAPER_BUY)
+        self.assertEqual(allocation["allocated_usd"], 100)
+        self.assertEqual(len(self.ledger("BUY")), 1)
+
+    def test_both_ensure_failures_run_engine_without_sync(self):
+        from paper_engine import run_cycle
+
+        cycle_now = ENTRY
+        pair_id = self.insert_pair("pair-both-fail", created_at=ENTRY - timedelta(hours=24))
+        self._insert_period(pair_id, "24h", ENTRY - timedelta(minutes=5))
+        ensure_calls = []
+        sync_calls = []
+
+        def fail_ensure(now=None, db_path=None):
+            ensure_calls.append(now)
+            raise RuntimeError("ensure down")
+
+        def spy_sync(now=None, db_path=None):
+            sync_calls.append(now)
+
+        def run_cycle_call():
+            return run_cycle(
+                now=cycle_now,
+                price_fetcher=lambda chain_id, pair_address: None,
+                db_path=self.db_path,
+                new_24h_pair_ids=[pair_id],
+            )
+
+        with patch("paper_portfolio.ensure_portfolio", side_effect=fail_ensure), \
+             patch("paper_portfolio.sync_portfolio", side_effect=spy_sync):
+            run_engine_with_portfolio(
+                cycle_now,
+                run_cycle_call,
+                db_path=self.db_path,
+            )
+
+        position = self.position_by_pair(pair_id)
+
+        tables = [
+            row["name"]
+            for row in self.query("SELECT name FROM sqlite_master WHERE type = 'table'")
+        ]
+
+        self.assertEqual(ensure_calls, [cycle_now, cycle_now])
+        self.assertEqual(sync_calls, [])
+        self.assertEqual(position["status"], "OPEN")
+        self.assertEqual(position["created_at"], format_datetime(cycle_now))
+        self.assertNotIn("paper_account", tables)
+        self.assertNotIn("paper_allocations", tables)
+        self.assertNotIn("paper_cash_ledger", tables)
 
     def _insert_period(self, pair_id, check_period, checked_at):
         connection = sqlite3.connect(self.db_path)

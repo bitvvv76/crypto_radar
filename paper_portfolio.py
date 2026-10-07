@@ -851,6 +851,7 @@ def _select_new_positions(connection, portfolio_id, activated_at):
         FROM paper_positions AS pp
         WHERE pp.strategy_version = ?
           AND pp.created_at >= ?
+          AND pp.status = ?
           AND NOT EXISTS (
               SELECT 1
               FROM paper_allocations AS a
@@ -861,6 +862,7 @@ def _select_new_positions(connection, portfolio_id, activated_at):
     """, (
         STRATEGY_VERSION,
         activated_at,
+        STATUS_OPEN,
         portfolio_id,
     ))
     return [_row(row) for row in cursor.fetchall()]
@@ -888,6 +890,49 @@ def _row(row):
     return {key: row[key] for key in row.keys()}
 
 
+def run_engine_with_portfolio(cycle_now, run_cycle_call, db_path=None):
+    """
+    Один cycle_now на обе попытки ensure и на sync.
+
+    Повтор ensure нужен только если первая попытка не прошла.
+    При двух неудачах Paper Engine уже выполнен, sync не запускается
+    и исключение наружу не выходит.
+    """
+    portfolio_ready = _try_ensure_portfolio(cycle_now, db_path)
+
+    try:
+        run_cycle_call()
+    except Exception as error:
+        print()
+        print("PAPER ENGINE: ошибка, проверки цены уже завершены")
+        print(error)
+
+    if not portfolio_ready:
+        portfolio_ready = _try_ensure_portfolio(cycle_now, db_path)
+
+    if not portfolio_ready:
+        return
+
+    try:
+        sync_portfolio(cycle_now, db_path=db_path)
+    except Exception as error:
+        print()
+        print("PAPER PORTFOLIO: ошибка синхронизации, paper engine уже завершён")
+        print(error)
+
+
+def _try_ensure_portfolio(cycle_now, db_path):
+    try:
+        ensure_portfolio(cycle_now, db_path=db_path)
+    except Exception as error:
+        print()
+        print("PAPER PORTFOLIO: ошибка инициализации, paper engine продолжит работу")
+        print(error)
+        return False
+
+    return True
+
+
 def _print_sync_summary(stats):
     print()
     print("ИТОГ PAPER PORTFOLIO")
@@ -903,22 +948,8 @@ def _print_sync_summary(stats):
 if __name__ == "__main__":
     from paper_engine import run_cycle
 
-    current_time = utc_now()
-
-    try:
-        ensure_portfolio(current_time)
-    except Exception as error:
-        print("PAPER PORTFOLIO: ошибка инициализации, paper engine продолжит работу")
-        print(error)
-
-    try:
-        run_cycle(now=current_time)
-    except Exception as error:
-        print("PAPER ENGINE: ошибка, проверки цены уже завершены")
-        print(error)
-
-    try:
-        sync_portfolio(current_time)
-    except Exception as error:
-        print("PAPER PORTFOLIO: ошибка синхронизации, paper engine уже завершён")
-        print(error)
+    cycle_now = utc_now()
+    run_engine_with_portfolio(
+        cycle_now,
+        lambda: run_cycle(now=cycle_now),
+    )
