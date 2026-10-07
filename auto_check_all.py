@@ -131,9 +131,17 @@ def main():
     print("Ошибок проверки:", failed_count)
 
     try:
-        from paper_engine import run_cycle
+        from paper_engine import run_cycle, utc_now
+        from paper_portfolio import run_engine_with_portfolio
 
-        run_cycle(new_24h_pair_ids=new_24h_pair_ids)
+        cycle_now = utc_now()
+        run_engine_with_portfolio(
+            cycle_now,
+            lambda: run_cycle(
+                now=cycle_now,
+                new_24h_pair_ids=new_24h_pair_ids,
+            ),
+        )
     except Exception as error:
         print()
         print("PAPER ENGINE: ошибка, проверки цены уже завершены")
