@@ -728,6 +728,124 @@ class PaperAnalyticsTest(unittest.TestCase):
             expected,
         )
 
+    def test_current_drawdown_raises_max_when_peak_is_missing_from_snapshots(self):
+        self.insert_account(cash=9000, initial=10000, peak=10000, max_drawdown=0)
+        self.insert_ledger("DEPOSIT", 10000, 10000, ENTRY)
+        report = self.report()["account"]
+        self.assertEqual(report["current_nav_usd"], 9000)
+        self.assertEqual(report["peak_equity_usd"], 10000)
+        self.assertAlmostEqual(report["current_drawdown_percent"], 10)
+        self.assertAlmostEqual(report["max_drawdown_percent"], 10)
+
+        self.execute("UPDATE paper_account SET cash_usd = 9920 WHERE id = 1")
+        eased = self.report()["account"]
+        self.assertEqual(eased["current_nav_usd"], 9920)
+        self.assertAlmostEqual(eased["current_drawdown_percent"], 0.8)
+        self.assertGreaterEqual(eased["max_drawdown_percent"], 0.8)
+        self.assertAlmostEqual(eased["max_drawdown_percent"], 0.8)
+
+    def test_exposure_is_undefined_when_equity_is_not_positive(self):
+        self.insert_account(cash=0, initial=0, peak=0, max_drawdown=0)
+        pair_id = self.insert_pair("pair-zero-equity", "ZERO/USDC")
+        position_id = self.insert_position(pair_id, ENTRY, status="OPEN")
+        allocation_id = self.insert_allocation(
+            position_id,
+            pair_id,
+            status="OPEN",
+            allocated_usd=100,
+            quantity=100,
+            entry_price=1,
+            exit_price=None,
+            exit_time=None,
+            exit_reason=None,
+            result_percent=None,
+            market_value_usd=0,
+            unrealized_pnl_usd=0,
+            realized_pnl_usd=0,
+            last_price=1,
+        )
+        self.insert_ledger("BUY", -100, 0, ENTRY, allocation_id)
+        zero = self.report()
+        self.assertEqual(zero["capital_risk"]["max_capital_in_positions_usd"], 100)
+        self.assertIsNone(zero["capital_risk"]["max_exposure_percent"])
+        self.assertIn("Max portfolio exposure:    —", self.rendered(zero))
+
+        self.execute(
+            """
+            UPDATE paper_account
+            SET initial_deposit_usd = -50, cash_usd = -50
+            WHERE id = 1
+            """
+        )
+        self.execute(
+            "UPDATE paper_allocations SET market_value_usd = 0 WHERE id = ?",
+            (allocation_id,),
+        )
+        negative = self.report()
+        self.assertEqual(negative["account"]["current_nav_usd"], -50)
+        self.assertIsNone(negative["capital_risk"]["max_exposure_percent"])
+
+    def test_later_non_positive_equity_clears_earlier_exposure(self):
+        self.insert_account(cash=0, initial=10000, peak=10000, max_drawdown=0)
+        self.insert_ledger("DEPOSIT", 10000, 10000, ENTRY - timedelta(hours=2))
+        first_pair = self.insert_pair("pair-valid-exposure", "VALID/USDC")
+        second_pair = self.insert_pair("pair-invalid-exposure", "INVALID/USDC")
+        first_position = self.insert_position(first_pair, ENTRY, status="CLOSED")
+        second_position = self.insert_position(
+            second_pair,
+            ENTRY + timedelta(hours=1),
+            status="OPEN",
+        )
+        first_allocation = self.insert_allocation(
+            first_position,
+            first_pair,
+            status="CLOSED",
+            allocated_usd=100,
+            result_percent=0,
+            realized_pnl_usd=0,
+        )
+        second_allocation = self.insert_allocation(
+            second_position,
+            second_pair,
+            status="OPEN",
+            allocated_usd=100,
+            quantity=100,
+            entry_price=1,
+            exit_price=None,
+            exit_time=None,
+            exit_reason=None,
+            result_percent=None,
+            market_value_usd=0,
+            unrealized_pnl_usd=0,
+            realized_pnl_usd=0,
+            last_price=1,
+        )
+        self.insert_ledger("BUY", -100, 9900, ENTRY, first_allocation)
+        self.insert_ledger(
+            "SELL",
+            100,
+            10000,
+            ENTRY + timedelta(hours=2),
+            first_allocation,
+        )
+        self.insert_ledger(
+            "BUY",
+            -100,
+            9900,
+            ENTRY + timedelta(hours=1),
+            second_allocation,
+        )
+        self.insert_snapshot(
+            ENTRY + timedelta(hours=1),
+            equity=0,
+            cash=0,
+            market=0,
+        )
+        report = self.report()
+        self.assertEqual(report["capital_risk"]["max_capital_in_positions_usd"], 200)
+        self.assertIsNone(report["capital_risk"]["max_exposure_percent"])
+        self.assertIn("Max portfolio exposure:    —", self.rendered(report))
+
     def test_open_allocation_remains_unrealized_if_baseline_is_closed(self):
         self.insert_account(cash=9900)
         pair_id = self.insert_pair("pair-lag", "LAG/USDC")

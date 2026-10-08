@@ -281,6 +281,10 @@ def equity_stats(account, snapshots, current_nav):
         if current_drawdown < 0:
             current_drawdown = 0.0
 
+    if current_drawdown is not None:
+        if max_drawdown is None or current_drawdown > max_drawdown:
+            max_drawdown = current_drawdown
+
     return {
         "peak_equity_usd": peak,
         "max_drawdown_percent": max_drawdown,
@@ -452,6 +456,17 @@ def exposure_stats(account, allocations, snapshots, current_nav):
     max_count = 0
     max_capital = 0.0
     max_exposure = 0.0
+    undefined_exposure = False
+
+    def note_exposure(capital, equity):
+        nonlocal max_exposure, undefined_exposure
+        if capital > 0 and equity is not None and equity <= 0:
+            undefined_exposure = True
+            return
+        if capital > 0 and equity is not None and equity > 0:
+            exposure = capital / equity * 100.0
+            if exposure > max_exposure:
+                max_exposure = exposure
 
     for moment, _order, delta_count, delta_capital in events:
         current_count += delta_count
@@ -460,22 +475,16 @@ def exposure_stats(account, allocations, snapshots, current_nav):
             max_count = current_count
         if current_capital > max_capital:
             max_capital = current_capital
-        equity = _equity_at(moment, equity_points, initial)
-        if equity is not None and equity > 0:
-            exposure = current_capital / equity * 100.0
-            if exposure > max_exposure:
-                max_exposure = exposure
+        note_exposure(current_capital, _equity_at(moment, equity_points, initial))
 
     current = as_float(current_nav)
-    if current is not None and current > 0:
-        exposure_now = open_capital / current * 100.0
-        if exposure_now > max_exposure:
-            max_exposure = exposure_now
+    if current is not None:
+        note_exposure(open_capital, current)
 
     return {
         "max_concurrent_positions": max_count,
         "max_capital_in_positions_usd": max_capital,
-        "max_exposure_percent": max_exposure,
+        "max_exposure_percent": None if undefined_exposure else max_exposure,
     }
 
 
