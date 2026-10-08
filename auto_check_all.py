@@ -130,6 +130,7 @@ def main():
     print("Пары без свежих данных:", data_not_found_count)
     print("Ошибок проверки:", failed_count)
 
+    cycle_now = None
     try:
         from paper_engine import run_cycle, utc_now
         from paper_portfolio import run_engine_with_portfolio
@@ -145,6 +146,17 @@ def main():
     except Exception as error:
         print()
         print("PAPER ENGINE: ошибка, проверки цены уже завершены")
+        print(error)
+
+    try:
+        from human_approval import run_approval_maintenance
+        if cycle_now is None:
+            from paper_engine import utc_now
+            cycle_now = utc_now()
+        run_approval_maintenance(cycle_now)
+    except Exception as error:
+        print()
+        print("HUMAN APPROVAL: ошибка, контроль уже завершён")
         print(error)
 
 
