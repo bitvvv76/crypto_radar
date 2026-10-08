@@ -1,0 +1,16 @@
+[Unit]
+Description=Crypto Radar Telegram approval UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/crypto_radar
+EnvironmentFile=/opt/crypto_radar/.env
+ExecStart=/opt/crypto_radar/venv/bin/python /opt/crypto_radar/approval_bot.py
+User=root
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

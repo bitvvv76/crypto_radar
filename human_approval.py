@@ -184,6 +184,34 @@ def list_actionable(now=None, db_path=None):
     return actionable
 
 
+def get_request_view(request_id, db_path=None):
+    """
+    Снимок одной заявки для внешнего UI.
+
+    Статус, деньги и котировку эта функция не меняет.
+    """
+    if not _table_exists(db_path, "approval_requests"):
+        return None
+    connection = _connect(db_path)
+    try:
+        row = connection.execute("""
+            SELECT
+                r.*,
+                pp.status AS baseline_status,
+                p.pair_symbol AS pair_symbol
+            FROM approval_requests AS r
+            LEFT JOIN paper_positions AS pp
+                ON pp.id = r.position_id
+            LEFT JOIN pairs AS p
+                ON p.id = r.pair_id
+            WHERE r.id = ?
+            LIMIT 1
+        """, (request_id,)).fetchone()
+        return _row(row)
+    finally:
+        connection.close()
+
+
 def decide_buy(request_id, db_path=None, price_fetcher=None, clock=None):
     """
     Свежая DEX-цена снимается до write lock.
