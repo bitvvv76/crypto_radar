@@ -1168,33 +1168,119 @@ class HumanVsControlTest(unittest.TestCase):
             report["portfolios"]["human"]["realized_pnl_usd"],
         ))
 
-    def test_raw_and_normalized_decision_value(self):
-        self._seed_value_case()
+    def test_decision_value_contributions(self):
+        self.insert_account(1, 10000)
+        self.insert_account(2, 10000)
+        nominal = 100
+        worse = self.add_decision(
+            "BUY",
+            baseline_result=50,
+            control={
+                "result_percent": 50,
+                "realized_pnl_usd": 999,
+                "entry_price": 1,
+            },
+            human={
+                "result_percent": 10,
+                "realized_pnl_usd": 1,
+                "entry_price": 1.02,
+            },
+            recommended_usd=nominal,
+        )
+        better = self.add_decision(
+            "BUY",
+            baseline_result=10,
+            control={"result_percent": 10, "realized_pnl_usd": 10, "entry_price": 1},
+            human={"result_percent": 20, "realized_pnl_usd": 20, "entry_price": 1},
+            recommended_usd=nominal,
+        )
+        saved = self.add_decision(
+            "SKIP",
+            baseline_result=-10,
+            control={"result_percent": -10, "realized_pnl_usd": -10},
+            recommended_usd=nominal,
+        )
+        missed = self.add_decision(
+            "SKIP",
+            baseline_result=30,
+            control={"result_percent": 30, "realized_pnl_usd": 30},
+            recommended_usd=nominal,
+        )
+        loose = self.add_decision(
+            "BUY",
+            baseline_result=80,
+            control=None,
+            human={"result_percent": 99, "realized_pnl_usd": 99},
+            recommended_usd=nominal,
+        )
         value = self.report()["decision_value"]
-        self.assertAlmostEqual(value["raw"]["value"], -30)
-        self.assertEqual(value["raw"]["status"], "ok")
-        self.assertEqual(value["raw"]["unit"], "percent_points")
-        self.assertAlmostEqual(value["normalized"]["value"], -30)
+        by_request = {
+            item["request_id"]: item
+            for item in value["raw"]["contributions"]
+        }
+
+        self.assertAlmostEqual(by_request[worse["request_id"]]["contribution_percent"], -40)
+        self.assertAlmostEqual(by_request[better["request_id"]]["contribution_percent"], 10)
+        self.assertAlmostEqual(by_request[saved["request_id"]]["contribution_percent"], 10)
+        self.assertAlmostEqual(by_request[missed["request_id"]]["contribution_percent"], -30)
+        self.assertAlmostEqual(value["raw"]["value"], -50)
+        self.assertNotIn(loose["request_id"], by_request)
+        self.assertIn(loose["request_id"], value["excluded_unmatched_buy_ids"])
+        self.assertEqual(value["excluded_unmatched_buy_count"], 1)
+
+        for item in value["raw"]["contributions"]:
+            self.assertEqual(item["nominal_usd"], nominal)
+            self.assertAlmostEqual(item["human_nominal_usd"], item["auto_nominal_usd"] + item["contribution_usd"])
+            self.assertAlmostEqual(
+                item["auto_nominal_usd"],
+                nominal * item["auto_result_percent"] / 100.0,
+            )
+            self.assertAlmostEqual(
+                item["contribution_usd"],
+                nominal * item["contribution_percent"] / 100.0,
+            )
+        worse_row = by_request[worse["request_id"]]
+        self.assertAlmostEqual(worse_row["human_nominal_usd"], 10)
+        self.assertAlmostEqual(worse_row["auto_nominal_usd"], 50)
+        self.assertAlmostEqual(worse_row["contribution_usd"], -40)
+        self.assertAlmostEqual(value["normalized"]["value"], -50)
         self.assertEqual(value["normalized"]["status"], "ok")
-        self.assertAlmostEqual(value["normalized"]["buy_pnl_usd"], -10)
-        self.assertAlmostEqual(value["normalized"]["skip_counterfactual_pnl_usd"], 20)
 
         self.add_decision(
             "BUY",
-            baseline_result=10,
+            baseline_result=5,
+            control={"result_percent": 5, "realized_pnl_usd": 5},
+            human={"result_percent": 5, "realized_pnl_usd": 5},
             recommended_usd=None,
-            human={"result_percent": 10, "realized_pnl_usd": 999},
         )
+        without_nominal = self.report()["decision_value"]
+        self.assertEqual(without_nominal["normalized"]["status"], "na")
+        self.assertIsNone(without_nominal["normalized"]["value"])
+        self.assertAlmostEqual(without_nominal["raw"]["value"], -50)
+
+    def test_raw_and_normalized_decision_value(self):
+        self._seed_value_case()
+        value = self.report()["decision_value"]
+        self.assertAlmostEqual(value["raw"]["value"], -60)
+        self.assertEqual(value["raw"]["status"], "ok")
+        self.assertEqual(value["raw"]["unit"], "percent_points")
+        self.assertEqual(value["excluded_unmatched_buy_count"], 1)
+        self.assertAlmostEqual(value["raw"]["buy_contribution_percent"], -40)
+        self.assertAlmostEqual(value["raw"]["skip_contribution_percent"], -20)
+        self.assertAlmostEqual(value["normalized"]["value"], -60)
+        self.assertEqual(value["normalized"]["status"], "ok")
+        self.assertAlmostEqual(value["normalized"]["buy_contribution_usd"], -40)
+        self.assertAlmostEqual(value["normalized"]["skip_contribution_usd"], -20)
+
         self.add_decision(
             "SKIP",
             baseline_result=-10,
             recommended_usd=None,
         )
         partial = self.report()["decision_value"]
-        self.assertEqual(partial["normalized"]["status"], "na")
-        self.assertIsNone(partial["normalized"]["value"])
         self.assertIsNone(partial["saved_loss_usd"])
         self.assertIsNotNone(partial["raw"]["value"])
+        self.assertEqual(partial["normalized"]["status"], "ok")
 
     def test_delay_buckets(self):
         self._seed_breakdown()

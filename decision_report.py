@@ -295,29 +295,43 @@ def _render_value(value):
     normalized = value["normalized"]
     print("6. DECISION VALUE")
     print(SECTION_RULE)
-    print("Сравнение завершённых BUY и SKIP. OPEN и PENDING_OUTCOME не подставляются нулём.")
+    print("Decision Value = фактический Human Approval минус полностью автоматический выбор.")
+    print("MATCHED BUY: human_result_percent - control/baseline_result_percent.")
+    print("SKIP с известным counterfactual: 0 - control/baseline_result_percent.")
+    print("OPEN, PENDING_OUTCOME и unmatched BUY в сумму не подставляются.")
     print("Excluded OPEN BUY:            {0}".format(value["excluded_open_buys"]))
     print("Excluded pending SKIP:        {0}".format(value["excluded_pending_skips"]))
+    print("Excluded unmatched BUY:       {0}".format(
+        value["excluded_unmatched_buy_count"]
+    ))
     print("RAW DECISION VALUE:           {0} percent points".format(
         format_number(raw["value"])
     ))
     print("  status:                     {0}".format(raw["status"]))
-    print("  BUY return sum:             {0}".format(
-        format_number(raw["buy_return_sum_percent"])
+    print("  BUY contribution:           {0} percent points".format(
+        format_number(raw["buy_contribution_percent"])
     ))
-    print("  SKIP counterfactual sum:    {0}".format(
-        format_number(raw["skip_counterfactual_return_sum_percent"])
+    print("  SKIP contribution:          {0} percent points".format(
+        format_number(raw["skip_contribution_percent"])
     ))
+    for item in raw["contributions"]:
+        print("  {0} #{1}: {2} pp (human {3}, auto {4})".format(
+            item["status"],
+            item["request_id"],
+            format_number(item["contribution_percent"]),
+            format_percent(item["human_result_percent"]),
+            format_percent(item["auto_result_percent"]),
+        ))
     print("  {0}".format(raw["note"]))
     print("NORMALIZED DECISION VALUE:   {0} USD".format(
         format_usd(normalized["value"], signed=True)
     ))
     print("  status:                     {0}".format(normalized["status"]))
-    print("  BUY notional PnL:           {0} USD".format(
-        format_usd(normalized["buy_pnl_usd"], signed=True)
+    print("  BUY contribution:           {0} USD".format(
+        format_usd(normalized["buy_contribution_usd"], signed=True)
     ))
-    print("  SKIP counterfactual PnL:    {0} USD".format(
-        format_usd(normalized["skip_counterfactual_pnl_usd"], signed=True)
+    print("  SKIP contribution:          {0} USD".format(
+        format_usd(normalized["skip_contribution_usd"], signed=True)
     ))
     print("  {0}".format(normalized["note"]))
     print()

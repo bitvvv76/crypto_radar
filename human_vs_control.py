@@ -944,11 +944,79 @@ def _buy_quality(records):
     }
 
 
+def _auto_result_percent(record):
+    """
+    Результат полностью автоматического выбора по сигналу.
+
+    MATCHED BUY: control result, он совпадает с baseline.
+    SKIP: известный baseline counterfactual.
+    Расхождение baseline и control не угадывается.
+    """
+    if record.get("baseline_control_mismatch"):
+        return None
+    if record.get("status") == DECISION_BUY:
+        if not record.get("matched") or record.get("buy_outcome") != STATUS_CLOSED:
+            return None
+        if record.get("buy_result_percent") is None:
+            return None
+        return as_float(record.get("control_result_percent"))
+    if record.get("status") == DECISION_SKIP:
+        if record.get("counterfactual_outcome") != OUTCOME_COMPLETE:
+            return None
+        return as_float(record.get("counterfactual_result_percent"))
+    return None
+
+
+def _decision_contribution(record):
+    """
+    Вклад решения против автоматического принятия сигнала.
+
+    MATCHED BUY: human_result_percent - auto_result_percent.
+    SKIP с известным counterfactual: 0 - auto_result_percent.
+    Unmatched BUY не входит: авто-результат ему сопоставить нельзя.
+    """
+    auto = _auto_result_percent(record)
+    if auto is None:
+        return None
+    status = record.get("status")
+    if status == DECISION_BUY:
+        human = record.get("buy_result_percent")
+        contribution = human - auto
+    elif status == DECISION_SKIP:
+        human = None
+        contribution = 0.0 - auto
+    else:
+        return None
+
+    nominal = as_float(record.get("recommended_usd"))
+    nominal_ready = (
+        bool(record.get("matched"))
+        and nominal is not None
+        and nominal > 0
+    )
+    human_usd = None
+    auto_usd = None
+    contribution_usd = None
+    if nominal_ready:
+        human_usd = nominal * (0.0 if human is None else human) / 100.0
+        auto_usd = nominal * auto / 100.0
+        contribution_usd = human_usd - auto_usd
+    return {
+        "request_id": record.get("request_id"),
+        "position_id": record.get("position_id"),
+        "status": status,
+        "matched": bool(record.get("matched")),
+        "human_result_percent": human,
+        "auto_result_percent": auto,
+        "contribution_percent": contribution,
+        "nominal_usd": nominal if nominal_ready else None,
+        "human_nominal_usd": human_usd,
+        "auto_nominal_usd": auto_usd,
+        "contribution_usd": contribution_usd,
+    }
+
+
 def _decision_value(records):
-    buys = [
-        record for record in records
-        if record["status"] == DECISION_BUY and record["buy_outcome"] == STATUS_CLOSED
-    ]
     skips = [
         record for record in records
         if record["status"] == DECISION_SKIP
@@ -963,17 +1031,10 @@ def _decision_value(records):
         if record["status"] == DECISION_SKIP
         and record["counterfactual_outcome"] == OUTCOME_PENDING
     )
-
-    buy_sum = sum(record["buy_result_percent"] for record in buys)
-    skip_sum = sum(record["counterfactual_result_percent"] for record in skips)
-    if buys or skips:
-        raw_value = buy_sum - skip_sum
-        raw_status = "ok"
-    else:
-        raw_value = None
-        raw_status = "na"
-        buy_sum = None
-        skip_sum = None
+    closed_buys = [
+        record for record in records
+        if record["status"] == DECISION_BUY and record["buy_outcome"] == STATUS_CLOSED
+    ]
 
     saved_percent = 0.0
     missed_percent = 0.0
@@ -995,12 +1056,7 @@ def _decision_value(records):
         notional_pnl(record.get("recommended_usd"), record["counterfactual_result_percent"])
         for record in skips
     ]
-    buy_notionals = [
-        notional_pnl(record.get("recommended_usd"), record["buy_result_percent"])
-        for record in buys
-    ]
     skip_ready = bool(skips) and all(value is not None for value in skip_notionals)
-    buy_ready = all(value is not None for value in buy_notionals)
     if skip_ready:
         saved_usd = sum(abs(value) for value in skip_notionals if value < 0)
         missed_usd = sum(value for value in skip_notionals if value > 0)
@@ -1012,18 +1068,6 @@ def _decision_value(records):
         net_usd = None
         skip_usd_status = "na"
 
-    normalized_ready = buy_ready and (skip_ready or not skips) and (buys or skips)
-    if normalized_ready:
-        buy_usd = sum(buy_notionals) if buys else 0.0
-        skip_usd = sum(skip_notionals) if skips else 0.0
-        normalized_value = buy_usd - skip_usd
-        normalized_status = "ok"
-    else:
-        buy_usd = None
-        skip_usd = None
-        normalized_value = None
-        normalized_status = "na"
-
     if not skips:
         saved_percent_value = None
         missed_percent_value = None
@@ -1033,11 +1077,75 @@ def _decision_value(records):
         missed_percent_value = missed_percent
         net_percent_value = saved_percent - missed_percent
 
+    excluded_unmatched = [
+        record for record in closed_buys
+        if not record.get("matched")
+    ]
+    contributions = []
+    for record in records:
+        if (
+            record.get("status") == DECISION_BUY
+            and record.get("buy_outcome") == STATUS_CLOSED
+            and not record.get("matched")
+        ):
+            continue
+        contribution = _decision_contribution(record)
+        if contribution is None:
+            continue
+        contributions.append(contribution)
+
+    if contributions:
+        raw_value = sum(item["contribution_percent"] for item in contributions)
+        raw_status = "ok"
+        buy_contribution = sum(
+            item["contribution_percent"]
+            for item in contributions
+            if item["status"] == DECISION_BUY
+        )
+        skip_contribution = sum(
+            item["contribution_percent"]
+            for item in contributions
+            if item["status"] == DECISION_SKIP
+        )
+    else:
+        raw_value = None
+        raw_status = "na"
+        buy_contribution = None
+        skip_contribution = None
+
+    matched_contributions = [
+        item for item in contributions if item["matched"]
+    ]
+    if not matched_contributions or any(
+        item["contribution_usd"] is None for item in matched_contributions
+    ):
+        normalized_value = None
+        normalized_status = "na"
+        buy_usd = None
+        skip_usd = None
+    else:
+        buy_usd = sum(
+            item["contribution_usd"]
+            for item in matched_contributions
+            if item["status"] == DECISION_BUY
+        )
+        skip_usd = sum(
+            item["contribution_usd"]
+            for item in matched_contributions
+            if item["status"] == DECISION_SKIP
+        )
+        normalized_value = buy_usd + skip_usd
+        normalized_status = "ok"
+
     return {
-        "completed_buy_outcomes": len(buys),
+        "completed_buy_outcomes": len(closed_buys),
         "completed_skip_outcomes": len(skips),
         "excluded_open_buys": open_buys,
         "excluded_pending_skips": pending_skips,
+        "excluded_unmatched_buy_count": len(excluded_unmatched),
+        "excluded_unmatched_buy_ids": [
+            record.get("request_id") for record in excluded_unmatched
+        ],
         "profitable_skipped": profitable_skipped,
         "losing_skipped": losing_skipped,
         "flat_skipped": flat_skipped,
@@ -1052,24 +1160,30 @@ def _decision_value(records):
             "unit": "percent_points",
             "value": raw_value,
             "status": raw_status,
-            "buy_return_sum_percent": buy_sum,
-            "skip_counterfactual_return_sum_percent": skip_sum,
+            "buy_contribution_percent": buy_contribution,
+            "skip_contribution_percent": skip_contribution,
+            "excluded_unmatched_buy_count": len(excluded_unmatched),
+            "contributions": contributions,
             "note": (
-                "Сумма фактических Human BUY result_percent минус сумма "
-                "baseline result_percent по завершённым SKIP. "
-                "Каждый сигнал весит одинаково. Это не доллары и не доход портфеля."
+                "Decision Value = фактический результат Human Approval "
+                "минус результат полностью автоматического выбора. "
+                "MATCHED BUY: human_result_percent - control/baseline_result_percent. "
+                "SKIP с известным counterfactual: 0 - control/baseline_result_percent. "
+                "RAW — сумма этих вкладов в процентных пунктах. "
+                "Unmatched BUY в сумму не входит."
             ),
         },
         "normalized": {
-            "unit": "usd_at_recommended_notional",
+            "unit": "usd_at_same_nominal",
             "value": normalized_value,
             "status": normalized_status,
-            "buy_pnl_usd": buy_usd,
-            "skip_counterfactual_pnl_usd": skip_usd,
+            "buy_contribution_usd": buy_usd,
+            "skip_contribution_usd": skip_usd,
             "note": (
-                "Тот же набор сигналов на recommended_usd каждой заявки "
-                "(номинал 1% NAV, если он записан). "
-                "Если номинал восстановить нельзя, значение N/A."
+                "Для каждого matched completed сигнала Human и Auto "
+                "считаются на одном recommended_usd. "
+                "BUY: human_usd - auto_usd. SKIP: 0 - auto_usd. "
+                "Если номинал или matched auto outcome восстановить нельзя, N/A."
             ),
         },
     }
