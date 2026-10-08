@@ -1,8 +1,8 @@
 """
-Telegram UI для Human Approval v0.7.
+Telegram UI для Human Approval v0.7 и сопровождение v0.8.1.
 
-Бот только показывает заявки и передаёт BUY или SKIP в ядро.
-Цену, сумму и статус он из сообщения не исполняет.
+Бот показывает заявки, передаёт BUY или SKIP в ядро и сообщает
+уже закрытую позицию книги 2. Цену и SELL он не исполняет.
 Реальных ордеров и ключей биржи здесь нет.
 """
 
@@ -42,6 +42,7 @@ from human_approval import (
     list_actionable,
 )
 from paper_engine import format_datetime, utc_now
+from position_notifications import deliver_closed_positions, handle_positions_message
 
 
 LABEL_BUY_EXECUTED = "✅ BUY EXECUTED"
@@ -95,7 +96,7 @@ class TelegramClient:
     def get_updates(self, offset=None, timeout=0):
         payload = {
             "timeout": timeout,
-            "allowed_updates": ["callback_query"],
+            "allowed_updates": ["callback_query", "message"],
         }
         if offset is not None:
             payload["offset"] = offset
@@ -328,6 +329,7 @@ def run_cycle(
     clock = clock or utc_now
     report = {
         "delivered": {"sent": 0, "errors": [], "request_ids": []},
+        "closed": {"sent": 0, "errors": [], "allocation_ids": []},
         "refreshed": [],
         "handled": [],
         "errors": [],
@@ -345,6 +347,17 @@ def run_cycle(
     for item in report["delivered"].get("errors", []):
         report["errors"].append(item.get("error") or str(item))
     try:
+        report["closed"] = deliver_closed_positions(
+            db_path,
+            client,
+            settings.chat_id,
+            clock=clock,
+        )
+    except Exception as error:
+        report["errors"].append(str(error))
+    for item in report["closed"].get("errors", []):
+        report["errors"].append(item.get("error") or str(item))
+    try:
         report["refreshed"] = refresh_notifications(db_path, client)
     except Exception as error:
         report["errors"].append(str(error))
@@ -359,14 +372,22 @@ def run_cycle(
     next_offset = offset
     for update in updates:
         try:
-            report["handled"].append(handle_callback(
-                update,
-                settings,
-                client,
-                db_path,
-                clock=clock,
-                price_fetcher=price_fetcher,
-            ))
+            if _is_message_update(update):
+                report["handled"].append(handle_positions_message(
+                    update,
+                    settings,
+                    client,
+                    db_path,
+                ))
+            else:
+                report["handled"].append(handle_callback(
+                    update,
+                    settings,
+                    client,
+                    db_path,
+                    clock=clock,
+                    price_fetcher=price_fetcher,
+                ))
         except Exception as error:
             report["errors"].append(str(error))
         update_id = update.get("update_id") if isinstance(update, dict) else None
@@ -505,6 +526,14 @@ def _safe_answer(client, callback_query_id):
         return
 
 
+def _is_message_update(update):
+    if not isinstance(update, dict):
+        return False
+    if update.get("callback_query") is not None:
+        return False
+    return isinstance(update.get("message"), dict)
+
+
 def _user_id(callback):
     sender = callback.get("from")
     if not isinstance(sender, dict):
@@ -519,6 +548,9 @@ def _print_cycle(report):
     delivered = report.get("delivered") or {}
     if delivered.get("sent"):
         print("TELEGRAM APPROVAL: отправлено", delivered["sent"])
+    closed = report.get("closed") or {}
+    if closed.get("sent"):
+        print("TELEGRAM APPROVAL: закрытых позиций", closed["sent"])
     if report.get("refreshed"):
         print("TELEGRAM APPROVAL: обновлено", len(report["refreshed"]))
     acted = [
