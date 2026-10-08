@@ -22,7 +22,13 @@ from approval_bot import (
     refresh_notifications,
     run_cycle,
 )
-from approval_bot_store import list_notifications
+from approval_bot_store import (
+    DELIVERY_DELIVERED,
+    DELIVERY_DISPATCHING,
+    DELIVERY_RESERVED,
+    claim_notification,
+    list_notifications,
+)
 from database import create_tables, ensure_paper_tables, open_baseline_position
 from human_approval import (
     APPROVAL_PORTFOLIO_ID,
@@ -342,6 +348,86 @@ class ApprovalBotTest(unittest.TestCase):
         self.assertEqual(restarted.sent, [])
         self.assertEqual(len(self.notifications()), 1)
         self.assertEqual(self.notifications()[0]["request_id"], request["id"])
+
+    def test_attach_failure_does_not_send_duplicate(self):
+        request = self.seed_pending(symbol="ATTACH/USDC")
+        client = FakeTelegram()
+        with patch("approval_bot.attach_message", side_effect=RuntimeError("attach failed")):
+            report = self.deliver(client)
+        restarted = FakeTelegram()
+        again = self.deliver(restarted)
+        note = self.notifications()[0]
+
+        self.assertEqual(report["sent"], 1)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(len(client.sent), 1)
+        self.assertEqual(again["sent"], 0)
+        self.assertEqual(restarted.sent, [])
+        self.assertEqual(note["request_id"], request["id"])
+        self.assertEqual(note["message_id"], client.sent[0]["message_id"])
+        self.assertEqual(note["delivery_state"], DELIVERY_DELIVERED)
+        self.assertEqual(len(self.notifications()), 1)
+
+    def test_restart_after_send_before_attach_does_not_duplicate(self):
+        request = self.seed_pending(symbol="CRASH/USDC", max_hold_hours=48)
+        client = FakeTelegram()
+        with patch("approval_bot.attach_message", side_effect=SystemExit("crash before attach")):
+            with self.assertRaises(SystemExit):
+                self.deliver(client)
+        note = self.notifications()[0]
+        restarted = FakeTelegram()
+        again = self.deliver(restarted)
+
+        self.assertEqual(len(client.sent), 1)
+        self.assertEqual(note["request_id"], request["id"])
+        self.assertIsNone(note["message_id"])
+        self.assertEqual(note["delivery_state"], DELIVERY_DISPATCHING)
+        self.assertEqual(again["sent"], 0)
+        self.assertEqual(restarted.sent, [])
+        self.assertEqual(len(self.notifications()), 1)
+
+        pair_id = self.insert_pair("pair-later", symbol="LATER/USDC")
+        self.open_position(pair_id, max_hold_hours=48)
+        self.maintain(ENTRY + timedelta(minutes=1))
+        recovered = self.deliver(restarted, moment=ENTRY + timedelta(minutes=1))
+        sent_ids = [item["request_id"] for item in self.notifications()]
+
+        self.assertEqual(recovered["sent"], 1)
+        self.assertEqual(len(restarted.sent), 1)
+        self.assertIn("LATER/USDC", restarted.sent[0]["text"])
+        self.assertNotIn(request["id"], recovered["request_ids"])
+        self.assertEqual(len(self.notifications()), 2)
+        self.assertIn(request["id"], sent_ids)
+
+    def test_unsent_reservation_is_delivered_later(self):
+        request = self.seed_pending(symbol="LATER-SEND/USDC")
+        claimed = claim_notification(
+            self.db_path,
+            request["id"],
+            self.chat_id,
+            format_datetime(ENTRY),
+            STATUS_PENDING,
+        )
+        self.assertTrue(claimed)
+        self.assertEqual(self.notifications()[0]["delivery_state"], DELIVERY_RESERVED)
+        self.assertIsNone(self.notifications()[0]["message_id"])
+
+        failed = FakeTelegram()
+        failed.fail_send = True
+        blocked = self.deliver(failed)
+        self.assertEqual(blocked["sent"], 0)
+        self.assertTrue(blocked["errors"])
+        self.assertEqual(failed.sent, [])
+        self.assertEqual(self.notifications(), [])
+
+        client = FakeTelegram()
+        delivered = self.deliver(client)
+        self.assertEqual(delivered["request_ids"], [request["id"]])
+        self.assertEqual(len(client.sent), 1)
+        self.assertEqual(self.notifications()[0]["delivery_state"], DELIVERY_DELIVERED)
+        self.assertEqual(self.notifications()[0]["message_id"], client.sent[0]["message_id"])
+        self.assertEqual(self.deliver(client)["sent"], 0)
+        self.assertEqual(len(client.sent), 1)
 
     def test_recovery_sends_missed_actionable_pending(self):
         self.activate(ENTRY)

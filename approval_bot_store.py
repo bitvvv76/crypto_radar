@@ -9,6 +9,11 @@ import sqlite3
 import database
 
 
+DELIVERY_RESERVED = "reserved"
+DELIVERY_DISPATCHING = "dispatching"
+DELIVERY_DELIVERED = "delivered"
+
+
 def ensure_notification_table(db_path=None):
     connection = _connect(db_path)
     try:
@@ -20,9 +25,26 @@ def ensure_notification_table(db_path=None):
                 message_id INTEGER,
                 sent_at TIMESTAMP NOT NULL,
                 last_status TEXT NOT NULL,
+                delivery_state TEXT NOT NULL CHECK (
+                    delivery_state IN ('reserved', 'dispatching', 'delivered')
+                ),
                 FOREIGN KEY (request_id) REFERENCES approval_requests (id)
             )
         """)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(approval_notifications)")
+        }
+        if "delivery_state" not in columns:
+            connection.execute("""
+                ALTER TABLE approval_notifications
+                ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'reserved'
+            """)
+            connection.execute("""
+                UPDATE approval_notifications
+                SET delivery_state = ?
+                WHERE message_id IS NOT NULL
+            """, (DELIVERY_DELIVERED,))
     finally:
         connection.close()
 
@@ -87,14 +109,16 @@ def claim_notification(db_path, request_id, chat_id, sent_at, last_status):
                 chat_id,
                 message_id,
                 sent_at,
-                last_status
+                last_status,
+                delivery_state
             )
-            VALUES (?, ?, NULL, ?, ?)
+            VALUES (?, ?, NULL, ?, ?, ?)
         """, (
             request_id,
             chat_id,
             sent_at,
             last_status,
+            DELIVERY_RESERVED,
         ))
         _commit(connection)
         return True
@@ -108,18 +132,26 @@ def claim_notification(db_path, request_id, chat_id, sent_at, last_status):
         connection.close()
 
 
-def attach_message(db_path, request_id, message_id):
+def mark_dispatching(db_path, request_id):
+    """
+    Фиксирует, что вызов Telegram начат.
+
+    Повторный вызов не переводит строку снова и не даёт вторую отправку.
+    """
     ensure_notification_table(db_path)
     connection = _connect(db_path)
     try:
         _begin(connection)
         cursor = connection.execute("""
             UPDATE approval_notifications
-            SET message_id = ?
-            WHERE request_id = ? AND message_id IS NULL
+            SET delivery_state = ?
+            WHERE request_id = ?
+              AND message_id IS NULL
+              AND delivery_state = ?
         """, (
-            message_id,
+            DELIVERY_DISPATCHING,
             request_id,
+            DELIVERY_RESERVED,
         ))
         _commit(connection)
         return cursor.rowcount == 1
@@ -128,6 +160,41 @@ def attach_message(db_path, request_id, message_id):
         raise
     finally:
         connection.close()
+
+
+def record_delivered_message(db_path, request_id, message_id):
+    """Записывает message_id. Повтор с тем же id остаётся успешным."""
+    ensure_notification_table(db_path)
+    message_id = int(message_id)
+    connection = _connect(db_path)
+    try:
+        _begin(connection)
+        cursor = connection.execute("""
+            UPDATE approval_notifications
+            SET message_id = ?, delivery_state = ?
+            WHERE request_id = ?
+              AND (message_id IS NULL OR message_id = ?)
+        """, (
+            message_id,
+            DELIVERY_DELIVERED,
+            request_id,
+            message_id,
+        ))
+        _commit(connection)
+        stored = cursor.rowcount == 1
+    except Exception:
+        _rollback(connection)
+        raise
+    finally:
+        connection.close()
+    if stored:
+        return True
+    current = get_notification(db_path, request_id)
+    return current is not None and current.get("message_id") == message_id
+
+
+def attach_message(db_path, request_id, message_id):
+    return record_delivered_message(db_path, request_id, message_id)
 
 
 def release_unsent(db_path, request_id):

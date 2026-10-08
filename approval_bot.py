@@ -16,10 +16,15 @@ import requests
 
 import database
 from approval_bot_store import (
+    DELIVERY_DELIVERED,
+    DELIVERY_DISPATCHING,
+    DELIVERY_RESERVED,
     attach_message,
     claim_notification,
     get_notification,
     list_notifications,
+    mark_dispatching,
+    record_delivered_message,
     release_unsent,
     update_last_status,
 )
@@ -198,7 +203,11 @@ def markup_for_status(request_id, status):
 def deliver_pending(db_path, client, chat_id, clock=None):
     """
     Досылает актуальные PENDING без второй копии уже отправленного сообщения.
-    Ошибка Telegram не меняет заявку и книги.
+
+    reserved — Telegram ещё не вызывался, отправку можно повторить.
+    dispatching — вызов уже начат; новый цикл сообщение не шлёт.
+    delivered — message_id записан.
+    Ошибка Telegram до принятия сообщения снимает резерв и не меняет книги.
     """
     clock = clock or utc_now
     now = clock()
@@ -212,32 +221,33 @@ def deliver_pending(db_path, client, chat_id, clock=None):
     for row in rows:
         request_id = row["id"]
         sent_message = None
+        dispatch_started = False
         try:
-            existing = get_notification(db_path, request_id)
-            if existing is not None and existing.get("message_id") is not None:
+            existing = _notification_for_delivery(
+                db_path,
+                request_id,
+                chat_id,
+                format_datetime(now),
+            )
+            if existing is None or _delivery_blocks_send(existing):
                 continue
-            if existing is None:
-                claimed = claim_notification(
-                    db_path,
-                    request_id,
-                    chat_id,
-                    format_datetime(now),
-                    STATUS_PENDING,
-                )
-                if not claimed:
-                    continue
+            if not mark_dispatching(db_path, request_id):
+                continue
+            dispatch_started = True
             sent_message = client.send_message(
                 chat_id,
                 render_request(row),
                 approval_keyboard(request_id),
             )
-            message_id = None if sent_message is None else sent_message.get("message_id")
+            message_id = _message_id_of(sent_message)
             if message_id is None:
                 raise TelegramApiError("telegram request failed")
-            attach_message(db_path, request_id, int(message_id))
+            _finish_delivery(db_path, request_id, message_id)
             sent_ids.append(request_id)
         except Exception as error:
-            if sent_message is None:
+            if _message_id_of(sent_message) is not None:
+                _persist_sent_message(db_path, request_id, sent_message)
+            elif dispatch_started:
                 release_unsent(db_path, request_id)
             errors.append({
                 "request_id": request_id,
@@ -415,6 +425,11 @@ def _edit_decision(db_path, client, callback, request_id, result, label):
         message_id = note.get("message_id")
     else:
         message_id = message.get("message_id")
+        if note is not None and message_id is not None:
+            try:
+                record_delivered_message(db_path, request_id, int(message_id))
+            except Exception:
+                pass
     if chat_id is None or message_id is None:
         return
     status = result.get("status") or view.get("status")
@@ -429,6 +444,56 @@ def _edit_decision(db_path, client, callback, request_id, result, label):
         return
     if note is not None and status is not None:
         update_last_status(db_path, request_id, status)
+
+
+def _notification_for_delivery(db_path, request_id, chat_id, sent_at):
+    existing = get_notification(db_path, request_id)
+    if existing is not None:
+        return existing
+    if not claim_notification(db_path, request_id, chat_id, sent_at, STATUS_PENDING):
+        return get_notification(db_path, request_id)
+    return get_notification(db_path, request_id)
+
+
+def _delivery_blocks_send(existing):
+    if existing.get("message_id") is not None:
+        return True
+    state = existing.get("delivery_state")
+    if state == DELIVERY_DELIVERED:
+        return True
+    if state == DELIVERY_DISPATCHING:
+        return True
+    return state not in (DELIVERY_RESERVED, None)
+
+
+def _message_id_of(sent_message):
+    if not isinstance(sent_message, dict):
+        return None
+    message_id = sent_message.get("message_id")
+    if message_id is None:
+        return None
+    return int(message_id)
+
+
+def _finish_delivery(db_path, request_id, message_id):
+    try:
+        stored = attach_message(db_path, request_id, message_id)
+    except Exception:
+        stored = False
+    if stored:
+        return
+    if not record_delivered_message(db_path, request_id, message_id):
+        raise TelegramApiError("telegram request failed")
+
+
+def _persist_sent_message(db_path, request_id, sent_message):
+    message_id = _message_id_of(sent_message)
+    if message_id is None:
+        return False
+    try:
+        return record_delivered_message(db_path, request_id, message_id)
+    except Exception:
+        return False
 
 
 def _safe_answer(client, callback_query_id):
