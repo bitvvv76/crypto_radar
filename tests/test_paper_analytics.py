@@ -510,6 +510,12 @@ class PaperAnalyticsTest(unittest.TestCase):
         self.assertEqual(primary["average_result_percent"], 12.5)
         self.assertAlmostEqual(primary["realized_pnl_usd"], 25.05)
 
+        output = StringIO()
+        with patch("sys.stdout", output):
+            code = main(["--db", self.db_path])
+        self.assertEqual(code, 0)
+        self._assert_breakdown_text(output.getvalue())
+
     def test_odd_median_includes_flat_trade(self):
         self.insert_account()
         self.insert_ledger("DEPOSIT", 10000, 10000, ENTRY)
@@ -900,6 +906,9 @@ class PaperAnalyticsTest(unittest.TestCase):
         ):
             self.assertIn(title, text)
         self.assertIn("Режим: read-only. Счёт, NAV, ledger и allocations не изменяются.", text)
+        self.assertIn("Нет закрытых сделок с result %.", text)
+        self.assertLess(text.index("3. CLOSED TRADES"), text.index("4. BREAKDOWN"))
+        self.assertLess(text.index("4. BREAKDOWN"), text.index("5. CAPITAL / RISK"))
         self.assertEqual(self.dump(), before)
         ensure_mock.assert_not_called()
         sync_mock.assert_not_called()
@@ -933,6 +942,38 @@ class PaperAnalyticsTest(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(self.dump(), before)
+
+    def _assert_breakdown_text(self, text):
+        self.assertIn("4. BREAKDOWN", text)
+        self.assertLess(text.index("3. CLOSED TRADES"), text.index("4. BREAKDOWN"))
+        self.assertLess(text.index("4. BREAKDOWN"), text.index("5. CAPITAL / RISK"))
+        section = text.split("4. BREAKDOWN", 1)[1].split("5. CAPITAL / RISK", 1)[0]
+        blocks = {}
+        current = None
+        for line in section.splitlines():
+            if line in ("final_score", "signal_type", "cohort", "exit_reason"):
+                current = line
+                blocks[current] = []
+            elif current and line.startswith("  "):
+                blocks[current].append(line)
+
+        self.assertEqual(
+            list(blocks),
+            ["final_score", "signal_type", "cohort", "exit_reason"],
+        )
+        for lines in blocks.values():
+            self.assertTrue(lines)
+            for line in lines:
+                self.assertIn("n=", line)
+                self.assertIn("win rate", line)
+                self.assertIn("avg", line)
+                self.assertIn("realized", line)
+                self.assertIn("USD", line)
+
+        self.assertIn("86  n=1  win rate 100.00%  avg +20.00%  realized +20.00 USD", blocks["final_score"][0])
+        self.assertIn("NEUTRAL  n=1  win rate 100.00%  avg +5.00%  realized +5.05 USD", blocks["signal_type"][0])
+        self.assertIn("PRIMARY  n=2  win rate 100.00%  avg +12.50%  realized +25.05 USD", blocks["cohort"][0])
+        self.assertIn("STOP_LOSS  n=1  win rate 0.00%  avg -10.00%  realized -10.00 USD", blocks["exit_reason"][0])
 
     def _seed_touching_intervals(self, db_path):
         original = database.DB_NAME
