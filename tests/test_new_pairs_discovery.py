@@ -426,6 +426,18 @@ class DiscoveryRunTest(unittest.TestCase):
         self.assertEqual(candidate["status"], "DEX_PAIR_NOT_FOUND")
         self.assertEqual(self.pair_rows(), [])
 
+    def test_dex_quote_disagreement_stays_out_of_the_intake_counter(self):
+        spec = self.spec(22, "USDC", "80", dex="quote_mismatch")
+        summary = self.run_specs([spec])
+        self.assertEqual(summary["supported_quote"], 1)
+        self.assertEqual(summary["unsupported_quote"], 0)
+        self.assertEqual(summary["dex_not_found"], 1)
+        self.assertEqual(summary["dex_enriched"], 0)
+        self.assertEqual(summary["saved_new_ideas"], 0)
+        candidate = get_candidate(SOURCE_GECKO, "solana", spec["address"])
+        self.assertEqual(candidate["status"], "DEX_PAIR_NOT_FOUND")
+        self.assertEqual(candidate["reason"], "dex_quote_rejected")
+
     def test_invalid_price_and_liquidity_are_not_saved(self):
         missing_price = self.spec(22, "USDC", "80", dex="bad_price")
         thin = self.spec(23, "USDC", "thin")
@@ -848,6 +860,8 @@ class DiscoveryRunTest(unittest.TestCase):
             )
             if spec["dex"] == "bad_price":
                 built["priceUsd"] = None
+            if spec["dex"] == "quote_mismatch":
+                built["quoteToken"]["symbol"] = "SOL"
             if spec["dex"] == "mismatch":
                 built["baseToken"]["address"] = sol_address(99999)
             pairs[spec["address"]] = built

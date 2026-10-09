@@ -212,13 +212,14 @@ def format_report(summary):
         lines.append("")
         lines.append("GeckoTerminal вернул 429. Повторных запросов не было.")
 
-    preview = summary.get("preview") or []
+    preview = [
+        item for item in (summary.get("preview") or [])
+        if item.get("final_score") is not None and item["final_score"] >= MIN_FINAL_SCORE
+    ]
     if preview:
         lines.append("")
         lines.append("Кандидаты со score >= 70:")
         for item in preview:
-            if item["final_score"] < MIN_FINAL_SCORE:
-                continue
             lines.append(
                 "- {0}/{1} {2} score {3} {4}".format(
                     item["base_symbol"],
@@ -367,9 +368,9 @@ def _decide_pool(parsed, pool_key, enrich_pair, summary):
         return decision
 
     if not _quote_still_allowed(enriched):
-        summary["unsupported_quote"] += 1
-        decision["status"] = "unsupported_quote"
-        decision["reason"] = "unsupported_quote"
+        summary["dex_not_found"] += 1
+        decision["status"] = "DEX_PAIR_NOT_FOUND"
+        decision["reason"] = "dex_quote_rejected"
         return decision
 
     summary["dex_enriched"] += 1
