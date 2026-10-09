@@ -287,6 +287,10 @@ def empty_cycle_stats():
         "expired_without_mark": 0,
         "skipped_existing_bucket": 0,
         "price_missing": 0,
+        "new_24h_events": 0,
+        "sql_candidates": 0,
+        "rejections": [],
+        "entry_errors": [],
     }
 
 
@@ -301,37 +305,54 @@ def default_price_fetcher(chain_id, pair_address):
     return normalize_price(fresh_pair.get("priceUsd"))
 
 
-def _candidate_allowed(candidate):
+def candidate_rejection_reason(candidate):
+    """Та же последовательность проверок, что и у допуска кандидата."""
     if score_cohort(candidate.get("final_score")) is None:
-        return False
+        return "score_outside_cohort"
 
     if classify_signal_type(candidate.get("change_24h")) is None:
-        return False
+        return "change_24h_unclassified"
 
     if normalize_price(candidate.get("entry_price")) is None:
-        return False
+        return "entry_price_invalid"
 
-    return True
+    return None
+
+
+def _candidate_allowed(candidate):
+    return candidate_rejection_reason(candidate) is None
 
 
 def _open_new_positions(now, db_path, stats, new_24h_pair_ids):
     now_text = format_datetime(now)
+    events = list(new_24h_pair_ids or [])
+    stats["new_24h_events"] = len(events)
+    stats["rejections"] = []
+    stats["entry_errors"] = []
 
-    if not new_24h_pair_ids:
+    if not events:
+        stats["sql_candidates"] = 0
         return set()
 
     candidates = get_24h_paper_candidates_for_pairs(
-        pair_ids=list(new_24h_pair_ids),
+        pair_ids=events,
         min_final_score=MIN_FINAL_SCORE,
         db_path=db_path,
     )
+    stats["sql_candidates"] = len(candidates)
+    _record_sql_gaps(stats, events, candidates, db_path)
     opened_pair_ids = set()
 
     for candidate in candidates:
         pair_id = candidate["pair_id"]
 
         try:
-            if not _candidate_allowed(candidate):
+            rejection = candidate_rejection_reason(candidate)
+            if rejection is not None:
+                stats["rejections"].append({
+                    "pair_id": pair_id,
+                    "reason": rejection,
+                })
                 continue
 
             entry_price = normalize_price(candidate["entry_price"])
@@ -353,11 +374,22 @@ def _open_new_positions(now, db_path, stats, new_24h_pair_ids):
                 db_path=db_path,
             )
         except Exception as error:
+            from monitor_store import redact_text
+
             print("PAPER ENGINE: ошибка входа, Pair ID:", pair_id)
-            print(error)
+            print(redact_text(error))
+            stats["entry_errors"].append({
+                "pair_id": pair_id,
+                "reason": "entry_error",
+                "error_type": type(error).__name__,
+            })
             continue
 
         if not created:
+            stats["rejections"].append({
+                "pair_id": pair_id,
+                "reason": "baseline_already_exists",
+            })
             continue
 
         opened_pair_ids.add(pair_id)
@@ -555,11 +587,32 @@ def _close_expired_open_positions(now, db_path, stats):
         print("PAPER ENGINE: TIME_EXIT по последнему mark, Pair ID:", pair_id)
 
 
+def _record_sql_gaps(stats, events, candidates, db_path):
+    try:
+        from signal_diagnostics import explain_sql_gaps
+
+        stats["rejections"].extend(explain_sql_gaps(
+            events,
+            [candidate["pair_id"] for candidate in candidates],
+            MIN_FINAL_SCORE,
+            db_path=db_path,
+        ))
+    except Exception as error:
+        stats["entry_errors"].append({
+            "pair_id": None,
+            "reason": "entry_error",
+            "error_type": type(error).__name__,
+        })
+
+
 def _print_cycle_summary(stats):
     print()
     print("ИТОГ PAPER ENGINE")
     print("=================")
+    print("Новых событий 24h:", stats["new_24h_events"])
+    print("Кандидатов после SQL:", stats["sql_candidates"])
     print("Открыто baseline:", stats["opened"])
+    print("Отклонено кандидатов:", len(stats["rejections"]))
     print("Новых marks:", stats["marks_inserted"])
     print("Обновлено OPEN:", stats["baseline_updates"])
     print("Закрыто по наблюдению:", stats["baseline_closes"])

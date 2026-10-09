@@ -91,6 +91,23 @@ def collect_unique_pairs():
 
 
 def main():
+    from monitor_store import JOB_SCANNER, record_job_run, utc_now_text
+    from scanner import consume_api_errors
+
+    started_at = utc_now_text()
+    consume_api_errors()
+    try:
+        summary = _scan_once()
+    except Exception as error:
+        _record_scanner_run(record_job_run, JOB_SCANNER, started_at, "error", {
+            "api_errors": consume_api_errors(),
+        }, error)
+        raise
+    summary["api_errors"] = consume_api_errors()
+    _record_scanner_run(record_job_run, JOB_SCANNER, started_at, "ok", summary, None)
+
+
+def _scan_once():
     print("CRYPTO RADAR — АВТОМАТИЧЕСКИЙ ПОИСК НОВЫХ ИДЕЙ")
     print("================================================")
 
@@ -191,6 +208,29 @@ def main():
 
     if saved_count == 0:
         print("Подходящих новых идей в этом запуске не найдено.")
+
+    return {
+        "saved_count": saved_count,
+        "watchlist_added_count": watchlist_added_count,
+        "existing_count": existing_count,
+        "below_score_count": below_score_count,
+        "pairs_before": pairs_before,
+        "pairs_after": pairs_after,
+    }
+
+
+def _record_scanner_run(record_job_run, job_name, started_at, status, summary, error):
+    try:
+        record_job_run(
+            None,
+            job_name,
+            started_at,
+            status,
+            summary=summary,
+            error_text=None if error is None else "{0}".format(type(error).__name__),
+        )
+    except Exception:
+        print("SCANNER: журнал запуска не записан")
 
 
 if __name__ == "__main__":

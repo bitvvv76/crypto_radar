@@ -43,6 +43,7 @@ from human_approval import (
 )
 from paper_engine import format_datetime, utc_now
 from position_notifications import deliver_closed_positions, handle_positions_message
+from monitor_store import redact_text
 
 
 LABEL_BUY_EXECUTED = "✅ BUY EXECUTED"
@@ -418,11 +419,12 @@ def main(argv=None):
             )
             offset = report["offset"]
             _print_cycle(report)
+            _deliver_monitoring_pass(db_path, client, settings, report)
             if report["errors"]:
                 time.sleep(3)
         except Exception as error:
             print("TELEGRAM APPROVAL: сбой цикла UI")
-            print(error)
+            print(redact_text(error))
             time.sleep(5)
         if args.once:
             return 0
@@ -561,6 +563,30 @@ def _print_cycle(report):
         print("TELEGRAM APPROVAL: решений", len(acted))
     if report.get("errors"):
         print("TELEGRAM APPROVAL: ошибка Telegram API")
+
+
+def _deliver_monitoring_pass(db_path, client, settings, report):
+    """Тот же процесс и тот же клиент. Второй polling не запускается."""
+    from daily_report import deliver_monitoring
+
+    try:
+        monitoring = deliver_monitoring(
+            db_path,
+            client,
+            settings.chat_id,
+            telegram_errors=report.get("errors") or [],
+        )
+    except Exception as error:
+        print("TELEGRAM: сбой мониторинга")
+        print(redact_text(error))
+        return
+    daily = monitoring.get("daily") or {}
+    if daily.get("sent"):
+        print("TELEGRAM: ежедневный отчёт отправлен")
+    elif daily.get("status") == "failed":
+        print("TELEGRAM: ежедневный отчёт не доставлен")
+    if monitoring.get("health_sent"):
+        print("TELEGRAM: уведомление контроля исправности отправлено")
 
 
 if __name__ == "__main__":
