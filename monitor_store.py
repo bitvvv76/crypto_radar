@@ -364,6 +364,32 @@ def release_daily_report_before_send(db_path, report_date, attempted_at, error_t
         connection.close()
 
 
+def note_uncertain_daily_delivery(db_path, report_date, error_text):
+    """Пишет причину, оставляя delivery_unknown. Автоматический повтор не разрешает."""
+    ensure_monitor_tables(db_path)
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute("""
+            UPDATE monitor_daily_reports
+            SET error_text = ?
+            WHERE report_date = ?
+              AND status = ?
+        """, (
+            redact_text(error_text),
+            report_date,
+            REPORT_UNKNOWN,
+        ))
+        noted = cursor.rowcount == 1
+        connection.execute("COMMIT")
+        return noted
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
 def mark_daily_report_failed(db_path, report_date, error_text, failed_at):
     ensure_monitor_tables(db_path)
     connection = _connect(db_path)

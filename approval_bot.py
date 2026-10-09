@@ -59,6 +59,28 @@ class TelegramApiError(Exception):
     pass
 
 
+class TelegramRejectedError(TelegramApiError):
+    """Telegram вернул ok=false: сообщение не принято."""
+
+
+def _response_body(response):
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def _rejection_text(body):
+    parts = ["telegram rejected the message"]
+    code = body.get("error_code")
+    description = body.get("description")
+    if isinstance(code, int):
+        parts.append("error_code={0}".format(code))
+    if isinstance(description, str) and description.strip():
+        parts.append(description.strip())
+    return "; ".join(parts)
+
+
 class BotSettings:
     def __init__(self, token, allowed_user_id, chat_id):
         self.token = token
@@ -108,11 +130,16 @@ class TelegramClient:
         url = "{0}/bot{1}/{2}".format(self.base_url, self.token, method)
         try:
             response = self.session.post(url, json=payload, timeout=timeout)
-            response.raise_for_status()
-            body = response.json()
         except Exception:
             raise TelegramApiError("telegram request failed")
-        if not isinstance(body, dict) or not body.get("ok"):
+        body = _response_body(response)
+        if isinstance(body, dict) and body.get("ok") is False:
+            raise TelegramRejectedError(_rejection_text(body))
+        try:
+            response.raise_for_status()
+        except Exception:
+            raise TelegramApiError("telegram request failed")
+        if not isinstance(body, dict) or body.get("ok") is not True:
             raise TelegramApiError("telegram request failed")
         return body.get("result")
 

@@ -11,6 +11,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import database
+from approval_bot import TelegramRejectedError
 from health_monitor import evaluate_health, render_health_alert
 from monitor_store import (
     DISPATCH_LEASE,
@@ -18,6 +19,7 @@ from monitor_store import (
     JOB_SCANNER,
     REPORT_DELIVERED,
     REPORT_FAILED,
+    REPORT_UNKNOWN,
     claim_daily_report,
     get_daily_report,
     job_runs_between,
@@ -26,6 +28,7 @@ from monitor_store import (
     mark_daily_report_delivered,
     mark_daily_report_failed,
     mark_daily_report_unknown,
+    note_uncertain_daily_delivery,
     redact_text,
     release_daily_report_before_send,
     resolve_unknown_delivery,
@@ -134,7 +137,12 @@ def send_due_daily_report(
     before_send=None,
     lease=DISPATCH_LEASE,
 ):
-    """Одна попытка отправить отчёт завершённых суток UTC."""
+    """Одна попытка отправить отчёт завершённых суток UTC.
+
+    Ошибка до вызова Telegram становится failed и может повториться.
+    После вызова failed остаётся только при ответе Telegram ok=false.
+    Timeout, обрыв и ответ без message_id остаются delivery_unknown.
+    """
     moment = _as_datetime(now) if now is not None else datetime.now(timezone.utc).replace(tzinfo=None)
     start, _end = completed_report_window(moment)
     report_date = start.strftime("%Y-%m-%d")
@@ -173,30 +181,23 @@ def send_due_daily_report(
 
     try:
         sent = client.send_message(chat_id, text)
+    except TelegramRejectedError as error:
+        return _confirmed_rejection(
+            db_path,
+            report_date,
+            error,
+            utc_now_text(moment),
+        )
     except Exception as error:
-        public = redact_text(error)
-        mark_daily_report_failed(db_path, report_date, public, utc_now_text(moment))
-        return {
-            "sent": False,
-            "report_date": report_date,
-            "status": REPORT_FAILED,
-            "error": public,
-        }
+        return _uncertain_delivery(db_path, report_date, error)
 
     message_id = _message_id_of(sent)
     if message_id is None:
-        mark_daily_report_failed(
+        return _uncertain_delivery(
             db_path,
             report_date,
             "telegram response has no message_id",
-            utc_now_text(moment),
         )
-        return {
-            "sent": False,
-            "report_date": report_date,
-            "status": REPORT_FAILED,
-            "error": "telegram response has no message_id",
-        }
     mark_daily_report_delivered(
         db_path,
         report_date,
@@ -582,6 +583,28 @@ def _show_unknown(value):
     if not value:
         return "нет"
     return ", ".join(str(item) for item in value)
+
+
+def _confirmed_rejection(db_path, report_date, error, failed_at):
+    public = redact_text(error)
+    mark_daily_report_failed(db_path, report_date, public, failed_at)
+    return {
+        "sent": False,
+        "report_date": report_date,
+        "status": REPORT_FAILED,
+        "error": public,
+    }
+
+
+def _uncertain_delivery(db_path, report_date, error):
+    public = redact_text(error)
+    note_uncertain_daily_delivery(db_path, report_date, public)
+    return {
+        "sent": False,
+        "report_date": report_date,
+        "status": REPORT_UNKNOWN,
+        "error": public,
+    }
 
 
 def _skipped_delivery(db_path, report_date):

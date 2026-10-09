@@ -15,6 +15,7 @@ import auto_scan
 import database
 import daily_report
 import scanner
+from approval_bot import TelegramApiError, TelegramClient, TelegramRejectedError
 from daily_report import (
     build_daily_report,
     deliver_monitoring,
@@ -65,12 +66,17 @@ class FakeTelegram:
         self.fail_times = 0
         self.crash = None
         self.empty_result = False
+        self.confirmed_rejection = False
 
     def send_message(self, chat_id, text, reply_markup=None):
         if self.crash is not None:
             raise self.crash
         if self.fail_times:
             self.fail_times -= 1
+            if self.confirmed_rejection:
+                raise TelegramRejectedError(
+                    "telegram rejected the message {0}".format(TOKEN)
+                )
             raise RuntimeError("telegram request failed {0}".format(TOKEN))
         if self.empty_result:
             return {"ok": True}
@@ -83,6 +89,34 @@ class FakeTelegram:
 
     def get_updates(self, offset=None, timeout=0):
         raise AssertionError("polling")
+
+
+class JsonResponse:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError("http {0}".format(self.status_code))
+
+
+class ScriptedSession:
+    def __init__(self, steps):
+        self.steps = list(steps)
+        self.calls = 0
+
+    def post(self, url, json=None, timeout=None):
+        self.calls += 1
+        step = self.steps.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        return step
 
 
 class SignalMonitoringTest(unittest.TestCase):
@@ -211,6 +245,7 @@ class SignalMonitoringTest(unittest.TestCase):
     def test_resend_is_idempotent_and_failure_retries_once(self):
         client = FakeTelegram()
         client.fail_times = 1
+        client.confirmed_rejection = True
 
         failed = send_due_daily_report(self.db_path, client, 77, now=NOW)
         stored = get_daily_report(self.db_path, "2026-10-08")
@@ -259,16 +294,146 @@ class SignalMonitoringTest(unittest.TestCase):
         self.assertEqual(skipped["status"], "delivery_unknown")
         self.assertEqual(client.sent, [])
 
-    def test_empty_telegram_result_can_be_retried(self):
+    def test_empty_telegram_result_is_not_retried(self):
         empty = FakeTelegram()
         empty.empty_result = True
         first = send_due_daily_report(self.db_path, empty, 77, now=NOW)
         empty.empty_result = False
         second = send_due_daily_report(self.db_path, empty, 77, now=NOW)
 
-        self.assertEqual(first["status"], "failed")
-        self.assertTrue(second["sent"])
-        self.assertEqual(len(empty.sent), 1)
+        self.assertEqual(first["status"], "delivery_unknown")
+        self.assertEqual(first["error"], "telegram response has no message_id")
+        self.assertFalse(second["sent"])
+        self.assertEqual(second["status"], "delivery_unknown")
+        self.assertEqual(empty.sent, [])
+
+    def test_error_before_send_is_failed_and_retried(self):
+        client = FakeTelegram()
+
+        def boom():
+            raise RuntimeError("render failed")
+
+        failed = send_due_daily_report(
+            self.db_path,
+            client,
+            77,
+            now=NOW,
+            before_send=boom,
+        )
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(client.sent, [])
+
+        delivered = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        self.assertTrue(delivered["sent"])
+        self.assertEqual(len(client.sent), 1)
+
+    def test_timeout_after_send_starts_stays_unknown(self):
+        self.assert_transport_failure_stays_unknown(requests.Timeout("timed out"))
+
+    def test_connection_drop_after_send_starts_stays_unknown(self):
+        self.assert_transport_failure_stays_unknown(
+            requests.ConnectionError("connection aborted")
+        )
+
+    def test_unclassified_send_error_stays_unknown(self):
+        client = FakeTelegram()
+        client.fail_times = 1
+        first = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        second = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        stored = get_daily_report(self.db_path, "2026-10-08")
+
+        self.assertEqual(first["status"], "delivery_unknown")
+        self.assertFalse(second["sent"])
+        self.assertEqual(second["status"], "delivery_unknown")
+        self.assertEqual(client.sent, [])
+        self.assertNotIn(TOKEN, stored["error_text"] or "")
+        self.assertIn("[redacted]", stored["error_text"])
+
+    def test_client_timeout_is_not_a_confirmed_rejection(self):
+        session = ScriptedSession([requests.Timeout("timed out")])
+        client = TelegramClient(TOKEN, session=session)
+        first = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        second = send_due_daily_report(self.db_path, client, 77, now=NOW)
+
+        self.assertEqual(first["status"], "delivery_unknown")
+        self.assertEqual(second["status"], "delivery_unknown")
+        self.assertEqual(session.calls, 1)
+        self.assertNotIn(TOKEN, first["error"] or "")
+        with self.assertRaises(TelegramApiError) as caught:
+            TelegramClient(TOKEN, session=ScriptedSession([
+                requests.Timeout("timed out"),
+            ])).send_message(77, "hi")
+        self.assertNotIsInstance(caught.exception, TelegramRejectedError)
+
+    def test_client_connection_drop_is_not_a_confirmed_rejection(self):
+        session = ScriptedSession([requests.ConnectionError("connection aborted")])
+        client = TelegramClient(TOKEN, session=session)
+        first = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        second = send_due_daily_report(self.db_path, client, 77, now=NOW)
+
+        self.assertEqual(first["status"], "delivery_unknown")
+        self.assertEqual(second["status"], "delivery_unknown")
+        self.assertEqual(session.calls, 1)
+        self.assertNotIn(TOKEN, first["error"] or "")
+
+    def test_response_without_message_id_is_not_retried(self):
+        cases = (
+            (NOW, {"ok": True, "result": {}}),
+            (NOW + timedelta(days=1), {"ok": True, "result": {"message_id": 0}}),
+            (NOW + timedelta(days=2), {"ok": True, "result": {"message_id": "15"}}),
+            (NOW + timedelta(days=3), {"ok": True, "result": None}),
+        )
+        for moment, body in cases:
+            session = ScriptedSession([JsonResponse(200, body)])
+            client = TelegramClient(TOKEN, session=session)
+            first = send_due_daily_report(self.db_path, client, 77, now=moment)
+            second = send_due_daily_report(self.db_path, client, 77, now=moment)
+            self.assertEqual(first["status"], "delivery_unknown", msg=str(body))
+            self.assertEqual(second["status"], "delivery_unknown", msg=str(body))
+            self.assertEqual(session.calls, 1, msg=str(body))
+
+    def test_confirmed_telegram_rejection_is_retried_once(self):
+        session = ScriptedSession([
+            JsonResponse(400, {
+                "ok": False,
+                "error_code": 400,
+                "description": "Bad Request: chat not found",
+            }),
+            JsonResponse(200, {"ok": True, "result": {"message_id": 15}}),
+        ])
+        client = TelegramClient(TOKEN, session=session)
+        failed = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        delivered = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        repeated = send_due_daily_report(self.db_path, client, 77, now=NOW)
+
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("chat not found", failed["error"])
+        self.assertIn("error_code=400", failed["error"])
+        self.assertNotIn(TOKEN, failed["error"])
+        self.assertTrue(delivered["sent"])
+        self.assertEqual(delivered["message_id"], 15)
+        self.assertFalse(repeated["sent"])
+        self.assertEqual(repeated["status"], "delivered")
+        self.assertEqual(session.calls, 2)
+
+    def assert_transport_failure_stays_unknown(self, error):
+        client = FakeTelegram()
+        client.crash = error
+        first = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        client.crash = None
+        second = send_due_daily_report(
+            self.db_path,
+            client,
+            77,
+            now=NOW + timedelta(hours=3),
+        )
+        stored = get_daily_report(self.db_path, "2026-10-08")
+
+        self.assertEqual(first["status"], "delivery_unknown")
+        self.assertFalse(second["sent"])
+        self.assertEqual(second["status"], "delivery_unknown")
+        self.assertEqual(stored["status"], "delivery_unknown")
+        self.assertEqual(client.sent, [])
 
     def test_crash_before_send_recovers_after_lease(self):
         client = FakeTelegram()
