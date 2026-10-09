@@ -6,10 +6,14 @@
 paper engine. Отдельного paper-контура здесь нет.
 """
 
+import os
 import re
 import sqlite3
 import sys
+from datetime import datetime, timedelta
+from pathlib import Path
 
+import database
 from auto_scan import ALLOWED_QUOTE_TOKENS, MAX_NEW_IDEAS, MIN_FINAL_SCORE
 from config import MIN_LIQUIDITY_USD
 from database import (
@@ -32,10 +36,13 @@ from scoring import (
     calculate_risk_score,
     get_risk_level,
 )
+from stablecoins import quote_token_reason
 
 
 JOB_NEW_PAIRS_DISCOVERY = "new_pairs_discovery"
-PAGES_PER_NETWORK = 1
+MAX_PAGES_PER_NETWORK = 3
+DISCOVERY_OVERLAP = timedelta(minutes=15)
+INITIAL_LOOKBACK = timedelta(minutes=30)
 _EVM_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}|0x[0-9a-fA-F]{64}")
 _SOLANA_ADDRESS_RE = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
 
@@ -63,7 +70,7 @@ def main(argv=None):
 def run_discovery(
     dry_run=False,
     networks=None,
-    pages=PAGES_PER_NETWORK,
+    pages=MAX_PAGES_PER_NETWORK,
     fetch_pools=None,
     enrich_pair=None,
     now=None,
@@ -77,15 +84,22 @@ def run_discovery(
     if networks is None:
         networks = discovery_networks()
 
-    received, api_error_details, rate_limited = _collect_pools(
+    cutoff, cutoff_basis = _discovery_cutoff(now)
+    page_cap = _page_cap(pages)
+    summary["cutoff"] = _format_cutoff(cutoff)
+    summary["cutoff_basis"] = cutoff_basis
+    summary["max_pages"] = page_cap
+    received, api_error_details, rate_limited, pagination = _collect_pools(
         networks,
-        pages,
+        page_cap,
         fetch_pools,
+        cutoff,
     )
     summary["api_pools_received"] = len(received)
     summary["api_errors"] = len(api_error_details)
     summary["api_error_kinds"] = api_error_details
     summary["rate_limited"] = rate_limited
+    summary["pagination"] = pagination
     if not dry_run:
         create_tables()
 
@@ -153,6 +167,11 @@ def empty_summary(dry_run=False):
         "unsupported_network": 0,
         "supported_quote": 0,
         "unsupported_quote": 0,
+        "unverified_quote": 0,
+        "cutoff": None,
+        "cutoff_basis": None,
+        "max_pages": MAX_PAGES_PER_NETWORK,
+        "pagination": {},
         "duplicates": 0,
         "dex_enriched": 0,
         "dex_not_found": 0,
@@ -194,6 +213,7 @@ def format_report(summary):
         ("Errors", summary["errors"]),
         ("Unsupported networks", summary["unsupported_network"]),
         ("Unsupported quote", summary["unsupported_quote"]),
+        ("Unverified quote", summary.get("unverified_quote", 0)),
         ("Duplicates", summary["duplicates"]),
         ("DexScreener not found", summary["dex_not_found"]),
         ("Invalid price", summary["invalid_price"]),
@@ -207,6 +227,21 @@ def format_report(summary):
     lines.append("")
     lines.append("Источник:")
     lines.append(summary.get("source") or SOURCE_GECKO)
+    lines.append("")
+    lines.append("Cutoff: {0} ({1})".format(
+        summary.get("cutoff") or "-",
+        summary.get("cutoff_basis") or "-",
+    ))
+    lines.append("Pages per network:")
+    pagination = summary.get("pagination") or {}
+    if not pagination:
+        lines.append("- нет запрошенных страниц")
+    for network, info in pagination.items():
+        lines.append("- {0}: {1} pages, stop {2}".format(
+            network,
+            info.get("pages_fetched", 0),
+            info.get("stop_reason") or "-",
+        ))
 
     if summary.get("rate_limited"):
         lines.append("")
@@ -270,7 +305,7 @@ def intake_reason(parsed):
         return "reverse_pair"
     if quote_symbol.upper() not in ALLOWED_QUOTE_TOKENS:
         return "unsupported_quote"
-    return None
+    return quote_token_reason(network, quote_symbol, quote_address)
 
 
 def find_existing_pair(chain_id, pair_address, base_token_address, evm):
@@ -367,10 +402,16 @@ def _decide_pool(parsed, pool_key, enrich_pair, summary):
         decision["reason"] = "invalid_liquidity"
         return decision
 
-    if not _quote_still_allowed(enriched):
+    dex_quote_reason = _dex_quote_reason(enriched, mapping["chain_id"])
+    if dex_quote_reason == "dex_quote_rejected":
         summary["dex_not_found"] += 1
         decision["status"] = "DEX_PAIR_NOT_FOUND"
         decision["reason"] = "dex_quote_rejected"
+        return decision
+    if dex_quote_reason is not None:
+        summary["dex_not_found"] += 1
+        decision["status"] = dex_quote_reason
+        decision["reason"] = dex_quote_reason
         return decision
 
     summary["dex_enriched"] += 1
@@ -495,37 +536,91 @@ def _candidate_fields(item):
     }
 
 
-def _collect_pools(networks, pages, fetch_pools):
+def _collect_pools(networks, pages, fetch_pools, cutoff):
     received = []
     errors = []
+    pagination = {}
     rate_limited = False
     for network in networks:
         if rate_limited:
             break
-        for page in range(1, pages + 1):
+        fetched, stop_reason, network_received, network_errors, rate_limited = _collect_network(
+            network,
+            pages,
+            fetch_pools,
+            cutoff,
+        )
+        received.extend(network_received)
+        errors.extend(network_errors)
+        pagination[network] = {
+            "pages_fetched": fetched,
+            "stop_reason": stop_reason,
+        }
+    return received, errors, rate_limited, pagination
+
+
+def _collect_network(network, pages, fetch_pools, cutoff):
+    received = []
+    errors = []
+    fetched = 0
+    stop_reason = "max_pages"
+    for page in range(1, pages + 1):
+        try:
             result = fetch_pools(network, page)
-            if not result.get("ok"):
-                errors.append({
-                    "source": "geckoterminal",
-                    "network": network,
-                    "page": page,
-                    "kind": result.get("error_kind"),
-                })
-                if result.get("error_kind") == "rate_limited":
-                    rate_limited = True
-                break
-            pools = result.get("pools") or []
-            if not pools:
-                break
-            included = result.get("included") or []
-            for pool in pools:
-                received.append((network, pool, included))
-    return received, errors, rate_limited
+        except Exception:
+            errors.append(_api_error(network, page, "malformed_page"))
+            return fetched, "malformed_page", received, errors, False
+
+        if not isinstance(result, dict):
+            errors.append(_api_error(network, page, "malformed_page"))
+            return fetched, "malformed_page", received, errors, False
+
+        if not result.get("ok"):
+            kind = result.get("error_kind") or "http_error"
+            errors.append(_api_error(network, page, kind))
+            if kind == "rate_limited":
+                return fetched, "rate_limited", received, errors, True
+            if kind in {"malformed_json", "malformed_page"}:
+                return fetched, "malformed_page", received, errors, False
+            return fetched, "api_error", received, errors, False
+
+        pools = result.get("pools")
+        included = result.get("included")
+        if not isinstance(pools, list) or (included is not None and not isinstance(included, list)):
+            errors.append(_api_error(network, page, "malformed_page"))
+            return fetched, "malformed_page", received, errors, False
+        if included is None:
+            included = []
+
+        fetched += 1
+        if not pools:
+            return fetched, "empty_page", received, errors, False
+
+        for pool in pools:
+            received.append((network, pool, included))
+
+        oldest = _oldest_pool_created_at(pools)
+        if oldest is not None and oldest <= cutoff:
+            return fetched, "cutoff", received, errors, False
+        if page == pages:
+            stop_reason = "max_pages"
+    return fetched, stop_reason, received, errors, False
+
+
+def _api_error(network, page, kind):
+    return {
+        "source": "geckoterminal",
+        "network": network,
+        "page": page,
+        "kind": kind,
+    }
 
 
 def _count_intake(summary, reason):
     if reason == "unsupported_quote":
         summary["unsupported_quote"] += 1
+    elif reason == "unverified_quote_token":
+        summary["unverified_quote"] += 1
 
 
 def _market_reason(pair):
@@ -546,16 +641,18 @@ def _market_reason(pair):
     return None
 
 
-def _quote_still_allowed(pair):
-    base_symbol = ((pair.get("baseToken") or {}).get("symbol") or "").upper()
-    quote_symbol = ((pair.get("quoteToken") or {}).get("symbol") or "").upper()
+def _dex_quote_reason(pair, chain_id):
+    base = pair.get("baseToken") or {}
+    quote = pair.get("quoteToken") or {}
+    base_symbol = (base.get("symbol") or "").upper()
+    quote_symbol = (quote.get("symbol") or "").upper()
     if not base_symbol or not quote_symbol:
-        return False
+        return "dex_quote_rejected"
     if base_symbol in ALLOWED_QUOTE_TOKENS:
-        return False
+        return "dex_quote_rejected"
     if quote_symbol not in ALLOWED_QUOTE_TOKENS:
-        return False
-    return True
+        return "dex_quote_rejected"
+    return quote_token_reason(chain_id, quote_symbol, quote.get("address"))
 
 
 def _same_market(parsed, enriched, mapping):
@@ -673,6 +770,85 @@ def _score_counts(decided):
 
 def _default_fetch(network, page):
     return fetch_new_pools(network, page=page)
+
+
+def _page_cap(pages):
+    if isinstance(pages, int) and 1 <= pages <= MAX_PAGES_PER_NETWORK:
+        return pages
+    return MAX_PAGES_PER_NETWORK
+
+
+def _discovery_cutoff(now):
+    moment = _parse_time(utc_now_text(now))
+    previous = _last_successful_started_at()
+    if previous is None:
+        return moment - INITIAL_LOOKBACK, "initial_lookback"
+    return previous - DISCOVERY_OVERLAP, "overlap"
+
+
+def _last_successful_started_at():
+    path = database.DB_NAME
+    if not path or not os.path.exists(path):
+        return None
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute("""
+            SELECT started_at
+            FROM monitor_job_runs
+            WHERE job_name = ?
+              AND status = 'ok'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (JOB_NEW_PAIRS_DISCOVERY,)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return _parse_time(row[0])
+
+
+def _oldest_pool_created_at(pools):
+    oldest = None
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        attributes = pool.get("attributes")
+        if not isinstance(attributes, dict):
+            continue
+        created = _parse_time(attributes.get("pool_created_at"))
+        if created is None:
+            continue
+        if oldest is None or created < oldest:
+            oldest = created
+    return oldest
+
+
+def _parse_time(value):
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None, microsecond=0)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1]
+    if "." in text:
+        text = text.split(".", 1)[0]
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _format_cutoff(moment):
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _record_run(started_at, status, summary, error):

@@ -8,7 +8,7 @@ Scoring, порог 70, Paper Engine, Human Approval, выход из позиц
 
 ## Что делает запуск
 
-`python new_pairs_discovery.py` читает новые pools GeckoTerminal, оставляет сети с проверенным mapping и quote USDC, USDT или DAI, подтверждает пару в DexScreener и считает текущий score. За один запуск сохраняется не больше 3 новых идей.
+`python new_pairs_discovery.py` читает новые pools GeckoTerminal, оставляет сети с проверенным mapping и quote USDC, USDT или DAI с каноническим адресом этой сети, подтверждает пару в DexScreener и считает текущий score. За один запуск сохраняется не больше 3 новых идей.
 
 `python new_pairs_discovery.py --dry-run` проходит ту же воронку и ничего не пишет в `pairs`, `watchlist`, `discovery_candidates` и `monitor_job_runs`.
 
@@ -18,9 +18,29 @@ Scoring, порог 70, Paper Engine, Human Approval, выход из позиц
 
 Рабочий запуск ходит только в network-specific endpoint:
 
-`GET /networks/{network}/new_pools?page=1&include=base_token,quote_token,dex`
+`GET /networks/{network}/new_pools?page=N&include=base_token,quote_token,dex`
 
-Глобальный `GET /networks/new_pools` в адаптере есть, но в production-запуск не входит: активная сеть иначе вытесняет остальные. Список сетей читается через `GET /networks?page=N`. На 429 повторных запросов нет, в сводке стоит `rate_limited`.
+`N` ограничен `MAX_PAGES_PER_NETWORK = 3`. Бесконечного обхода и исторического backfill нет.
+
+Cutoff считается от последнего успешного запуска `new_pairs_discovery` (`monitor_job_runs.status = ok`, поле `started_at`) минус overlap 15 минут. Если успешного запуска ещё не было, cutoff — это текущее время минус initial lookback 30 минут. Страницы сети читаются, пока самый старый `pool_created_at` на странице новее cutoff. Страница, на которой возраст пересекает cutoff, входит в результат, следующая уже не запрашивается. Если на странице нет ни одного `pool_created_at`, это не считается достижением cutoff. Пустая страница останавливает только эту сеть.
+
+Повторно найденный pool съедается текущей идемпотентностью `discovery_candidates` и `save_pair`.
+
+429 останавливает остальные страницы и остальные сети. Повторов нет. Timeout, 5xx и прочий HTTP-сбой останавливают только текущую сеть. Битая страница или исключение разбора не выбрасывают pools, уже собранные с предыдущих страниц, и не останавливают другие сети.
+
+Глобальный `GET /networks/new_pools` в адаптере есть, но в production-запуск не входит: активная сеть иначе вытесняет остальные. Список сетей читается через `GET /networks?page=N`.
+
+## Проверенные quote-адреса
+
+Символ USDC, USDT или DAI сам по себе пару не пропускает. Адрес должен совпасть с каноническим контрактом этой сети. Списки лежат в одном модуле `stablecoins.py`. EVM сравнивается без учёта регистра, Solana — с учётом. Несовпадение даёт `unverified_quote_token`.
+
+Адреса сверены 2026-10-09:
+
+- USDC: Circle, [USDC contract addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses). Ethereum, Solana, нативный Arbitrum (не bridged USDC.e), Base, Arc.
+- USDT: [Tether supported protocols](https://tether.to/en/supported-protocols). Только Ethereum и Solana. Arbitrum, Base и Arc там не указаны и не принимаются.
+- DAI: mainnet deployment [Sky/Maker Arbitrum DAI bridge](https://github.com/sky-ecosystem/arbitrum-dai-bridge). Ethereum `l1Dai` и Arbitrum `l2Dai`. Base, Solana и Arc не указаны и не принимаются.
+
+Если канонический адрес для пары token/network не доказан, он не угадывается.
 
 ## Проверенный mapping
 
@@ -64,3 +84,14 @@ sudo systemctl enable --now crypto-radar-discovery.timer
 ```
 
 `crypto-auto-scan.timer` остаётся прежним и по-прежнему запускается примерно раз в 6 часов. `crypto-radar-check.timer` и Telegram-бот этот комплект не перезапускает.
+
+Запись источника `dexscreener_legacy_search` в legacy scanner — best-effort. Если она падает после успешного `save_pair`, пара и watchlist остаются, а запуск scanner не становится failure.
+
+## Перед PR v0.10
+
+Сейчас `main` = `d9dedfb`, production v0.9.2 = `dfe0d29`, а эта ветка основана на `dfe0d29`. Rebase и merge в этом изменении не делались. Перед будущим PR v0.10 нужно по порядку:
+
+1. влить v0.9.2 в `main`;
+2. обновить ветку v0.10 от нового `main`;
+3. заново прогнать полный test suite;
+4. только после этого открывать PR v0.10.

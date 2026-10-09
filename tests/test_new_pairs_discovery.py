@@ -24,10 +24,11 @@ from gecko_discovery import (
     fetch_supported_networks,
     parse_new_pool,
 )
-from monitor_store import latest_job_run
+from monitor_store import JOB_SCANNER, latest_job_run
 from network_map import mapping_for_network
 from new_pairs_discovery import (
     JOB_NEW_PAIRS_DISCOVERY,
+    MAX_PAGES_PER_NETWORK,
     empty_summary,
     find_existing_pair,
     format_report,
@@ -35,6 +36,7 @@ from new_pairs_discovery import (
     main,
     run_discovery,
 )
+from stablecoins import canonical_quote_address
 from scoring import (
     calculate_final_score,
     calculate_potential_score,
@@ -222,7 +224,8 @@ class GeckoAdapterTest(unittest.TestCase):
     def test_stable_quotes_and_rejections(self):
         self.assertIsNone(self.reason("ABC", "USDC"))
         self.assertIsNone(self.reason("ABC", "USDT"))
-        self.assertIsNone(self.reason("ABC", "DAI"))
+        self.assertEqual(self.reason("ABC", "DAI"), "unverified_quote_token")
+        self.assertIsNone(self.reason("ABC", "DAI", network="eth"))
         self.assertEqual(self.reason("ABC", "SOL"), "unsupported_quote")
         self.assertEqual(self.reason("USDC", "USDT"), "reverse_pair")
         self.assertEqual(self.reason("usdc", "dai"), "reverse_pair")
@@ -318,14 +321,20 @@ class GeckoAdapterTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["pools"], [])
 
-    def reason(self, base_symbol, quote_symbol):
+    def reason(self, base_symbol, quote_symbol, network="solana", quote_address=None):
+        if quote_address is None:
+            quote_address = canonical_quote_address(network, quote_symbol)
+        if not quote_address:
+            quote_address = sol_address(5) if network == "solana" else evm_address(5)
+        pool_address = sol_address(3) if network == "solana" else evm_address(3)
+        base_address = sol_address(4) if network == "solana" else evm_address(4)
         return intake_reason({
-            "source_network": "solana",
-            "pool_address": sol_address(3),
+            "source_network": network,
+            "pool_address": pool_address,
             "base_symbol": base_symbol,
-            "base_token_address": sol_address(4),
+            "base_token_address": base_address,
             "quote_symbol": quote_symbol,
-            "quote_token_address": sol_address(5),
+            "quote_token_address": quote_address,
         })
 
 
@@ -349,12 +358,13 @@ class DiscoveryRunTest(unittest.TestCase):
             self.spec(4, "SOL", "80"),
         ]
         summary = self.run_specs(specs)
-        self.assertEqual(summary["supported_quote"], 3)
+        self.assertEqual(summary["supported_quote"], 2)
+        self.assertEqual(summary["unverified_quote"], 1)
         self.assertEqual(summary["unsupported_quote"], 1)
-        self.assertEqual(summary["saved_new_ideas"], 3)
-        self.assertEqual(len(self.pair_rows()), 3)
+        self.assertEqual(summary["saved_new_ideas"], 2)
+        self.assertEqual(len(self.pair_rows()), 2)
         quotes = sorted(row[1] for row in self.pair_rows_raw())
-        self.assertEqual(quotes, ["DAI", "USDC", "USDT"])
+        self.assertEqual(quotes, ["USDC", "USDT"])
 
     def test_duplicate_same_pool_is_stored_once(self):
         spec = self.spec(10, "USDC", "80")
@@ -695,8 +705,8 @@ class DiscoveryRunTest(unittest.TestCase):
             networks=["solana"],
             fetch_pools=lambda network, page: {
                 "ok": True,
-                "pools": pools,
-                "included": included,
+                "pools": pools if page == 1 else [],
+                "included": included if page == 1 else [],
             },
             enrich_pair=enrich,
             now=FIRST_SEEN,
@@ -716,8 +726,8 @@ class DiscoveryRunTest(unittest.TestCase):
                 networks=["solana"],
                 fetch_pools=lambda network, page: {
                     "ok": True,
-                    "pools": pools,
-                    "included": included,
+                    "pools": pools if page == 1 else [],
+                    "included": included if page == 1 else [],
                 },
                 enrich_pair=lambda chain, address: pairs[address],
                 now=FIRST_SEEN,
@@ -786,7 +796,23 @@ class DiscoveryRunTest(unittest.TestCase):
         ), patch("sys.stdout", new_callable=StringIO) as output:
             auto_scan._scan_once()
         self.assertEqual(len(self.pair_rows()), 4)
+        self.assertEqual(self.table_count("watchlist"), 4)
         self.assertIn("источник идеи не записан", output.getvalue())
+
+        with patch("discovery_store.record_legacy_idea", side_effect=RuntimeError("boom")), patch(
+            "auto_scan.search_pairs",
+            return_value={"pairs": [dex_pair(
+                "solana", sol_address(190), sol_address(191), "NEXT", sol_address(192), "USDC", "80",
+            )]},
+        ), patch("sys.stdout", new_callable=StringIO):
+            auto_scan.main()
+        self.assertEqual(len(self.pair_rows()), 5)
+        self.assertEqual(self.table_count("watchlist"), 5)
+        run = latest_job_run(self.db_path, JOB_SCANNER)
+        self.assertEqual(run["status"], "ok")
+        self.assertIsNone(run["error_text"])
+        self.assertEqual(run["summary"]["saved_count"], 1)
+        self.assertEqual(run["summary"]["watchlist_added_count"], 1)
 
     def test_cli_dry_run_flag_does_not_imply_a_live_call(self):
         with patch("sys.stdout", new_callable=StringIO):
@@ -799,16 +825,326 @@ class DiscoveryRunTest(unittest.TestCase):
             run.assert_called_once_with(dry_run=False)
             self.assertEqual(main(["--write"]), 2)
 
-    def spec(self, seed, quote, profile, network="solana", address=None, created="2026-10-09T12:00:00Z", dex="found"):
+    def test_page_two_is_read_when_page_one_stays_above_cutoff(self):
+        fresh = self.spec(201, "USDC", "80", created="2026-10-09T12:00:00Z")
+        older = self.spec(202, "USDC", "80", created="2026-10-09T11:00:00Z")
+        pages = {
+            1: self.materialize([fresh]),
+            2: self.materialize([older]),
+        }
+        calls = []
+        pairs = {}
+
+        def fetch(network, page):
+            calls.append(page)
+            if page not in pages:
+                return {"ok": True, "pools": [], "included": []}
+            pools, included, built = pages[page]
+            pairs.update(built)
+            return {"ok": True, "pools": pools, "included": included}
+
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertEqual(calls, [1, 2])
+        self.assertEqual(summary["cutoff"], "2026-10-09T11:30:00Z")
+        self.assertEqual(summary["cutoff_basis"], "initial_lookback")
+        self.assertEqual(summary["pagination"]["solana"]["pages_fetched"], 2)
+        self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "cutoff")
+        self.assertEqual(summary["api_pools_received"], 2)
+        self.assertEqual(summary["saved_new_ideas"], 2)
+
+    def test_cutoff_stops_pagination_before_the_next_page(self):
+        old = self.spec(203, "USDC", "80", created="2026-10-09T11:00:00Z")
+        pools, included, pairs = self.materialize([old])
+        calls = []
+
+        def fetch(network, page):
+            calls.append(page)
+            if page == 1:
+                return {"ok": True, "pools": pools, "included": included}
+            return {"ok": True, "pools": [], "included": []}
+
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertEqual(calls, [1])
+        self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "cutoff")
+        self.assertEqual(summary["pagination"]["solana"]["pages_fetched"], 1)
+        self.assertEqual(summary["api_pools_received"], 1)
+        self.assertEqual(summary["saved_new_ideas"], 1)
+
+    def test_overlap_does_not_create_duplicate_production_pair(self):
+        spec = self.spec(205, "USDC", "80", created="2026-10-09T12:00:00Z")
+        first = self.run_specs([spec], now=FIRST_SEEN)
+        second = self.run_specs([spec], now=SECOND_SEEN)
+        self.assertEqual(first["saved_new_ideas"], 1)
+        self.assertEqual(first["cutoff_basis"], "initial_lookback")
+        self.assertEqual(second["cutoff_basis"], "overlap")
+        self.assertEqual(second["cutoff"], "2026-10-09T11:45:00Z")
+        self.assertEqual(second["api_pools_received"], 1)
+        self.assertEqual(second["existing_pairs"], 1)
+        self.assertEqual(second["saved_new_ideas"], 0)
+        self.assertEqual(len(self.pair_rows()), 1)
+        self.assertEqual(self.table_count("watchlist"), 1)
+        candidate = get_candidate(SOURCE_GECKO, "solana", spec["address"])
+        self.assertEqual(candidate["seen_count"], 2)
+        self.assertEqual(candidate["status"], "existing_pair")
+
+    def test_max_pages_stops_pagination(self):
+        calls = []
+        pairs = {}
+
+        def fetch(network, page):
+            calls.append(page)
+            spec = self.spec(210 + page, "USDC", "80", created="2026-10-09T12:05:00Z")
+            pools, included, built = self.materialize([spec])
+            pairs.update(built)
+            return {"ok": True, "pools": pools, "included": included}
+
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertEqual(MAX_PAGES_PER_NETWORK, 3)
+        self.assertEqual(calls, [1, 2, 3])
+        self.assertEqual(summary["pagination"]["solana"]["pages_fetched"], 3)
+        self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "max_pages")
+        self.assertEqual(summary["api_pools_received"], 3)
+        self.assertEqual(summary["saved_new_ideas"], 3)
+
+    def test_rate_limit_on_page_two_keeps_page_one_and_stops(self):
+        spec = self.spec(220, "USDC", "80", created="2026-10-09T12:00:00Z")
+        pools, included, pairs = self.materialize([spec])
+        calls = []
+
+        def fetch(network, page):
+            calls.append((network, page))
+            if network == "solana" and page == 1:
+                return {"ok": True, "pools": pools, "included": included}
+            if network == "solana":
+                return {
+                    "ok": False,
+                    "error_kind": "rate_limited",
+                    "pools": [],
+                    "included": [],
+                }
+            raise AssertionError("network after 429")
+
+        summary = run_discovery(
+            networks=["solana", "eth"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertEqual(calls, [("solana", 1), ("solana", 2)])
+        self.assertTrue(summary["rate_limited"])
+        self.assertEqual(summary["api_errors"], 1)
+        self.assertEqual(summary["api_pools_received"], 1)
+        self.assertEqual(summary["saved_new_ideas"], 1)
+        self.assertEqual(summary["pagination"]["solana"]["pages_fetched"], 1)
+        self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "rate_limited")
+        self.assertNotIn("eth", summary["pagination"])
+        self.assertEqual([row[0] for row in self.pair_rows()], [spec["address"]])
+
+    def test_malformed_page_two_does_not_drop_page_one(self):
+        spec = self.spec(230, "USDC", "80", created="2026-10-09T12:00:00Z")
+        pools, included, pairs = self.materialize([spec])
+        calls = []
+
+        def fetch(network, page):
+            calls.append((network, page))
+            if network == "solana" and page == 1:
+                return {"ok": True, "pools": pools, "included": included}
+            if network == "solana" and page == 2:
+                raise RuntimeError("malformed page")
+            return {"ok": True, "pools": [], "included": []}
+
+        summary = run_discovery(
+            networks=["solana", "base"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertIn(("base", 1), calls)
+        self.assertNotIn(("solana", 3), calls)
+        self.assertEqual(summary["api_pools_received"], 1)
+        self.assertEqual(summary["api_errors"], 1)
+        self.assertEqual(summary["saved_new_ideas"], 1)
+        self.assertEqual(summary["pagination"]["solana"]["pages_fetched"], 1)
+        self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "malformed_page")
+        self.assertEqual(summary["pagination"]["base"]["stop_reason"], "empty_page")
+        self.assertEqual([row[0] for row in self.pair_rows()], [spec["address"]])
+        run = latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)
+        self.assertEqual(run["status"], "ok")
+
+    def test_repeated_discovery_run_stays_idempotent_across_pages(self):
+        spec = self.spec(240, "USDC", "80", created="2026-10-09T12:00:00Z")
+        self.run_specs([spec], now=FIRST_SEEN)
+        self.run_specs([spec], now=SECOND_SEEN)
+        third = self.run_specs([spec], now=datetime(2026, 10, 9, 12, 20, 0))
+        self.assertEqual(third["cutoff_basis"], "overlap")
+        self.assertEqual(third["saved_new_ideas"], 0)
+        self.assertEqual(len(self.pair_rows()), 1)
+        self.assertEqual(self.table_count("watchlist"), 1)
+        candidate = get_candidate(SOURCE_GECKO, "solana", spec["address"])
+        self.assertEqual(candidate["seen_count"], 3)
+        self.assertEqual(candidate["first_seen_at"], "2026-10-09 12:00:00")
+        self.assertEqual(candidate["status"], "existing_pair")
+
+    def test_real_usdc_address_is_accepted(self):
+        spec = self.spec(301, "USDC", "80")
+        self.assertEqual(spec["quote_addr"], canonical_quote_address("solana", "USDC"))
+        summary = self.run_specs([spec])
+        self.assertEqual(summary["supported_quote"], 1)
+        self.assertEqual(summary["unverified_quote"], 0)
+        self.assertEqual(summary["saved_new_ideas"], 1)
+
+    def test_fake_usdc_symbol_is_rejected(self):
+        spec = self.spec(302, "USDC", "80", quote_addr=sol_address(3020))
+        summary = self.run_specs([spec])
+        self.assertEqual(summary["supported_quote"], 0)
+        self.assertEqual(summary["unverified_quote"], 1)
+        self.assertEqual(summary["unsupported_quote"], 0)
+        self.assertEqual(summary["saved_new_ideas"], 0)
+        candidate = get_candidate(SOURCE_GECKO, "solana", spec["address"])
+        self.assertEqual(candidate["reason"], "unverified_quote_token")
+
+    def test_real_usdt_is_accepted_only_where_proven(self):
+        solana = self.run_specs([self.spec(303, "USDT", "80")])
+        ethereum = self.run_specs([
+            self.spec(304, "USDT", "80", network="eth"),
+        ], networks=["eth"])
+        arbitrum = self.run_specs([
+            self.spec(314, "USDT", "80", network="arbitrum"),
+        ], networks=["arbitrum"])
+        self.assertEqual(solana["saved_new_ideas"], 1)
+        self.assertEqual(ethereum["saved_new_ideas"], 1)
+        self.assertEqual(ethereum["supported_quote"], 1)
+        self.assertEqual(arbitrum["unverified_quote"], 1)
+        self.assertEqual(arbitrum["supported_quote"], 0)
+        self.assertEqual(arbitrum["saved_new_ideas"], 0)
+
+    def test_real_dai_is_accepted_only_where_proven(self):
+        ethereum = self.run_specs([
+            self.spec(305, "DAI", "80", network="eth"),
+        ], networks=["eth"])
+        arbitrum = self.run_specs([
+            self.spec(306, "DAI", "80", network="arbitrum"),
+        ], networks=["arbitrum"])
+        solana = self.run_specs([self.spec(307, "DAI", "80")])
+        base = self.run_specs([
+            self.spec(308, "DAI", "80", network="base"),
+        ], networks=["base"])
+        self.assertEqual(ethereum["saved_new_ideas"], 1)
+        self.assertEqual(ethereum["supported_quote"], 1)
+        self.assertEqual(arbitrum["saved_new_ideas"], 1)
+        self.assertEqual(solana["unverified_quote"], 1)
+        self.assertEqual(solana["saved_new_ideas"], 0)
+        self.assertEqual(base["unverified_quote"], 1)
+        self.assertEqual(base["saved_new_ideas"], 0)
+        quotes = sorted(row[1] for row in self.pair_rows_raw())
+        self.assertEqual(quotes, ["DAI", "DAI"])
+
+    def test_wrong_network_stablecoin_address_is_rejected(self):
+        spec = self.spec(
+            309,
+            "USDC",
+            "80",
+            network="base",
+            quote_addr=canonical_quote_address("ethereum", "USDC"),
+        )
+        summary = self.run_specs([spec], networks=["base"])
+        self.assertEqual(summary["unverified_quote"], 1)
+        self.assertEqual(summary["supported_quote"], 0)
+        self.assertEqual(summary["saved_new_ideas"], 0)
+        candidate = get_candidate(SOURCE_GECKO, "base", spec["address"])
+        self.assertEqual(candidate["reason"], "unverified_quote_token")
+
+    def test_evm_quote_address_match_ignores_case(self):
+        canonical = canonical_quote_address("ethereum", "USDC")
+        spec = self.spec(310, "USDC", "80", network="eth", quote_addr=canonical.lower())
+        pools, included, pairs = self.materialize([spec])
+        pairs[spec["address"]]["quoteToken"]["address"] = canonical
+        summary = run_discovery(
+            networks=["eth"],
+            fetch_pools=lambda network, page: {
+                "ok": True,
+                "pools": pools if page == 1 else [],
+                "included": included if page == 1 else [],
+            },
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertNotEqual(canonical, canonical.lower())
+        self.assertEqual(summary["supported_quote"], 1)
+        self.assertEqual(summary["dex_enriched"], 1)
+        self.assertEqual(summary["saved_new_ideas"], 1)
+
+    def test_solana_quote_address_match_keeps_case(self):
+        canonical = canonical_quote_address("solana", "USDC")
+        flipped = canonical[0].swapcase() + canonical[1:]
+        spec = self.spec(311, "USDC", "80", quote_addr=flipped)
+        summary = self.run_specs([spec])
+        self.assertNotEqual(flipped, canonical)
+        self.assertEqual(summary["unverified_quote"], 1)
+        self.assertEqual(summary["supported_quote"], 0)
+        self.assertEqual(summary["saved_new_ideas"], 0)
+
+    def test_dexscreener_unverified_quote_address_is_rejected(self):
+        spec = self.spec(312, "USDC", "80", created="2026-10-09T12:00:00Z")
+        pools, included, pairs = self.materialize([spec])
+        pairs[spec["address"]]["quoteToken"]["address"] = sol_address(8800)
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=lambda network, page: {
+                "ok": True,
+                "pools": pools if page == 1 else [],
+                "included": included if page == 1 else [],
+            },
+            enrich_pair=lambda chain, address: pairs.get(address),
+            now=FIRST_SEEN,
+        )
+        self.assertEqual(summary["supported_quote"], 1)
+        self.assertEqual(summary["dex_not_found"], 1)
+        self.assertEqual(summary["unverified_quote"], 0)
+        self.assertEqual(summary["saved_new_ideas"], 0)
+        candidate = get_candidate(SOURCE_GECKO, "solana", spec["address"])
+        self.assertEqual(candidate["status"], "unverified_quote_token")
+        self.assertEqual(candidate["reason"], "unverified_quote_token")
+
+    def spec(
+        self,
+        seed,
+        quote,
+        profile,
+        network="solana",
+        address=None,
+        created="2026-10-09T12:00:00Z",
+        dex="found",
+        quote_addr=None,
+    ):
         if address is None:
             address = evm_address(seed) if network != "solana" else sol_address(seed)
+        if quote_addr is None:
+            quote_addr = canonical_quote_address(network, quote)
+        if not quote_addr:
+            quote_addr = evm_address(2000 + seed) if network != "solana" else sol_address(2000 + seed)
         return {
             "network": network,
             "address": address,
             "base_symbol": "AAA{0}".format(seed),
             "quote_symbol": quote,
             "base_addr": evm_address(1000 + seed) if network != "solana" else sol_address(1000 + seed),
-            "quote_addr": evm_address(2000 + seed) if network != "solana" else sol_address(2000 + seed),
+            "quote_addr": quote_addr,
             "created": created,
             "profile": profile,
             "dex": dex,
@@ -817,15 +1153,37 @@ class DiscoveryRunTest(unittest.TestCase):
     def run_specs(self, specs, networks=None, dry_run=False, now=None):
         if networks is None:
             networks = ["solana"]
-        pools, included, pairs = self.materialize(specs)
+        grouped_pools = {}
+        grouped_included = {}
+        pairs = {}
+        for spec in specs:
+            pool, pool_included = gecko_pool(
+                spec["network"],
+                spec["address"],
+                spec["base_addr"],
+                spec["base_symbol"],
+                spec["quote_addr"],
+                spec["quote_symbol"],
+                spec["created"],
+            )
+            grouped_pools.setdefault(spec["network"], []).append(pool)
+            grouped_included.setdefault(spec["network"], []).extend(pool_included)
+            _pools, _included, built = self.materialize([spec])
+            pairs.update(built)
+
+        def fetch(network, page):
+            if page != 1:
+                return {"ok": True, "pools": [], "included": []}
+            return {
+                "ok": True,
+                "pools": grouped_pools.get(network, []),
+                "included": grouped_included.get(network, []),
+            }
+
         return run_discovery(
             dry_run=dry_run,
             networks=networks,
-            fetch_pools=lambda network, page: {
-                "ok": True,
-                "pools": pools,
-                "included": included,
-            },
+            fetch_pools=fetch,
             enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
             now=now or FIRST_SEEN,
         )
