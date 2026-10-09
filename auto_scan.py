@@ -160,6 +160,13 @@ def _scan_once():
             pair.get("chainId"),
             pair.get("pairAddress"),
         )
+        _remember_legacy_source(
+            pair,
+            risk_score,
+            potential_score,
+            final_score,
+            pair_id,
+        )
 
         added_to_watchlist = False
 
@@ -217,6 +224,21 @@ def _scan_once():
         "pairs_before": pairs_before,
         "pairs_after": pairs_after,
     }
+
+
+def _remember_legacy_source(pair, risk_score, potential_score, final_score, pair_id):
+    try:
+        from discovery_store import record_legacy_idea
+
+        record_legacy_idea(
+            pair,
+            risk_score,
+            potential_score,
+            final_score,
+            pair_id,
+        )
+    except Exception:
+        print("SCANNER: источник идеи не записан")
 
 
 def _record_scanner_run(record_job_run, job_name, started_at, status, summary, error):
