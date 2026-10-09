@@ -6,6 +6,7 @@
 paper engine. Отдельного paper-контура здесь нет.
 """
 
+import json
 import os
 import re
 import sqlite3
@@ -41,8 +42,10 @@ from stablecoins import quote_token_reason
 
 JOB_NEW_PAIRS_DISCOVERY = "new_pairs_discovery"
 MAX_PAGES_PER_NETWORK = 3
+COVERAGE_HISTORY_LIMIT = 100
 DISCOVERY_OVERLAP = timedelta(minutes=15)
 INITIAL_LOOKBACK = timedelta(minutes=30)
+_COMPLETE_STOPS = frozenset(("cutoff", "empty_page"))
 _EVM_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}|0x[0-9a-fA-F]{64}")
 _SOLANA_ADDRESS_RE = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
 
@@ -84,22 +87,24 @@ def run_discovery(
     if networks is None:
         networks = discovery_networks()
 
-    cutoff, cutoff_basis = _discovery_cutoff(now)
+    cutoffs = {
+        network: _network_cutoff(network, now)
+        for network in networks
+    }
     page_cap = _page_cap(pages)
-    summary["cutoff"] = _format_cutoff(cutoff)
-    summary["cutoff_basis"] = cutoff_basis
     summary["max_pages"] = page_cap
     received, api_error_details, rate_limited, pagination = _collect_pools(
         networks,
         page_cap,
         fetch_pools,
-        cutoff,
+        cutoffs,
     )
     summary["api_pools_received"] = len(received)
     summary["api_errors"] = len(api_error_details)
     summary["api_error_kinds"] = api_error_details
     summary["rate_limited"] = rate_limited
     summary["pagination"] = pagination
+    _apply_coverage(summary, networks)
     if not dry_run:
         create_tables()
 
@@ -153,7 +158,8 @@ def run_discovery(
     summary["score_counts"] = _score_counts(decided)
 
     if not dry_run:
-        _record_run(started_at, "ok", summary, None)
+        run_status = "ok" if summary["coverage_complete"] else "partial"
+        _record_run(started_at, run_status, summary, None)
     return summary
 
 
@@ -172,6 +178,9 @@ def empty_summary(dry_run=False):
         "cutoff_basis": None,
         "max_pages": MAX_PAGES_PER_NETWORK,
         "pagination": {},
+        "coverage_complete": False,
+        "networks_complete": 0,
+        "networks_incomplete": 0,
         "duplicates": 0,
         "dex_enriched": 0,
         "dex_not_found": 0,
@@ -228,19 +237,25 @@ def format_report(summary):
     lines.append("Источник:")
     lines.append(summary.get("source") or SOURCE_GECKO)
     lines.append("")
-    lines.append("Cutoff: {0} ({1})".format(
-        summary.get("cutoff") or "-",
-        summary.get("cutoff_basis") or "-",
+    lines.append("coverage_complete: {0}".format(
+        "yes" if summary.get("coverage_complete") else "no",
     ))
-    lines.append("Pages per network:")
+    lines.append("networks_complete: {0}".format(summary.get("networks_complete", 0)))
+    lines.append("networks_incomplete: {0}".format(summary.get("networks_incomplete", 0)))
     pagination = summary.get("pagination") or {}
     if not pagination:
-        lines.append("- нет запрошенных страниц")
+        lines.append("Pages per network: нет запрошенных страниц")
     for network, info in pagination.items():
-        lines.append("- {0}: {1} pages, stop {2}".format(
-            network,
-            info.get("pages_fetched", 0),
-            info.get("stop_reason") or "-",
+        lines.append("")
+        lines.append("{0}:".format(network))
+        lines.append("pages_fetched: {0}".format(info.get("pages_fetched", 0)))
+        lines.append("oldest_pool_created_at: {0}".format(
+            info.get("oldest_pool_created_at") or "-",
+        ))
+        lines.append("cutoff: {0}".format(info.get("cutoff") or "-"))
+        lines.append("stop_reason: {0}".format(info.get("stop_reason") or "-"))
+        lines.append("coverage_complete: {0}".format(
+            "yes" if info.get("coverage_complete") else "no",
         ))
 
     if summary.get("rate_limited"):
@@ -536,7 +551,7 @@ def _candidate_fields(item):
     }
 
 
-def _collect_pools(networks, pages, fetch_pools, cutoff):
+def _collect_pools(networks, pages, fetch_pools, cutoffs):
     received = []
     errors = []
     pagination = {}
@@ -544,18 +559,35 @@ def _collect_pools(networks, pages, fetch_pools, cutoff):
     for network in networks:
         if rate_limited:
             break
-        fetched, stop_reason, network_received, network_errors, rate_limited = _collect_network(
-            network,
-            pages,
-            fetch_pools,
-            cutoff,
-        )
+        cutoff, cutoff_basis = cutoffs[network]
+        (
+            fetched,
+            stop_reason,
+            network_received,
+            network_errors,
+            rate_limited,
+            oldest,
+        ) = _collect_network(network, pages, fetch_pools, cutoff)
         received.extend(network_received)
         errors.extend(network_errors)
-        pagination[network] = {
-            "pages_fetched": fetched,
-            "stop_reason": stop_reason,
-        }
+        pagination[network] = _coverage_record(
+            cutoff,
+            cutoff_basis,
+            fetched,
+            stop_reason,
+            oldest,
+        )
+    for network in networks:
+        if network in pagination:
+            continue
+        cutoff, cutoff_basis = cutoffs[network]
+        pagination[network] = _coverage_record(
+            cutoff,
+            cutoff_basis,
+            0,
+            "rate_limited",
+            None,
+        )
     return received, errors, rate_limited, pagination
 
 
@@ -563,48 +595,55 @@ def _collect_network(network, pages, fetch_pools, cutoff):
     received = []
     errors = []
     fetched = 0
+    oldest = None
     stop_reason = "max_pages"
+
+    def finish(reason, limited):
+        return fetched, reason, received, errors, limited, oldest
+
     for page in range(1, pages + 1):
         try:
             result = fetch_pools(network, page)
         except Exception:
             errors.append(_api_error(network, page, "malformed_page"))
-            return fetched, "malformed_page", received, errors, False
+            return finish("malformed_page", False)
 
         if not isinstance(result, dict):
             errors.append(_api_error(network, page, "malformed_page"))
-            return fetched, "malformed_page", received, errors, False
+            return finish("malformed_page", False)
 
         if not result.get("ok"):
             kind = result.get("error_kind") or "http_error"
             errors.append(_api_error(network, page, kind))
             if kind == "rate_limited":
-                return fetched, "rate_limited", received, errors, True
+                return finish("rate_limited", True)
             if kind in {"malformed_json", "malformed_page"}:
-                return fetched, "malformed_page", received, errors, False
-            return fetched, "api_error", received, errors, False
+                return finish("malformed_page", False)
+            return finish(kind, False)
 
         pools = result.get("pools")
         included = result.get("included")
         if not isinstance(pools, list) or (included is not None and not isinstance(included, list)):
             errors.append(_api_error(network, page, "malformed_page"))
-            return fetched, "malformed_page", received, errors, False
+            return finish("malformed_page", False)
         if included is None:
             included = []
 
         fetched += 1
         if not pools:
-            return fetched, "empty_page", received, errors, False
+            return finish("empty_page", False)
 
         for pool in pools:
             received.append((network, pool, included))
 
-        oldest = _oldest_pool_created_at(pools)
-        if oldest is not None and oldest <= cutoff:
-            return fetched, "cutoff", received, errors, False
+        page_oldest = _oldest_pool_created_at(pools)
+        if page_oldest is not None and (oldest is None or page_oldest < oldest):
+            oldest = page_oldest
+        if page_oldest is not None and page_oldest <= cutoff:
+            return finish("cutoff", False)
         if page == pages:
             stop_reason = "max_pages"
-    return fetched, stop_reason, received, errors, False
+    return finish(stop_reason, False)
 
 
 def _api_error(network, page, kind):
@@ -778,39 +817,99 @@ def _page_cap(pages):
     return MAX_PAGES_PER_NETWORK
 
 
-def _discovery_cutoff(now):
+def _apply_coverage(summary, networks):
+    pagination = summary.get("pagination") or {}
+    complete = 0
+    for network in networks:
+        info = pagination.get(network) or {}
+        if info.get("coverage_complete") is True:
+            complete += 1
+    summary["networks_complete"] = complete
+    summary["networks_incomplete"] = len(networks) - complete
+    summary["coverage_complete"] = summary["networks_incomplete"] == 0
+    cutoffs = []
+    bases = []
+    for network in networks:
+        info = pagination.get(network) or {}
+        cutoffs.append(info.get("cutoff"))
+        bases.append(info.get("cutoff_basis"))
+    if cutoffs and len(set(cutoffs)) == 1 and len(set(bases)) == 1:
+        summary["cutoff"] = cutoffs[0]
+        summary["cutoff_basis"] = bases[0]
+    elif cutoffs:
+        summary["cutoff"] = None
+        summary["cutoff_basis"] = "per_network"
+
+
+def _coverage_record(cutoff, cutoff_basis, pages_fetched, stop_reason, oldest):
+    return {
+        "pages_fetched": pages_fetched,
+        "oldest_pool_created_at": None if oldest is None else _format_cutoff(oldest),
+        "cutoff": _format_cutoff(cutoff),
+        "cutoff_basis": cutoff_basis,
+        "stop_reason": stop_reason,
+        "coverage_complete": stop_reason in _COMPLETE_STOPS,
+    }
+
+
+def _network_cutoff(network, now):
     moment = _parse_time(utc_now_text(now))
-    previous = _last_successful_started_at()
+    previous = _last_complete_started_at(network)
     if previous is None:
         return moment - INITIAL_LOOKBACK, "initial_lookback"
     return previous - DISCOVERY_OVERLAP, "overlap"
 
 
-def _last_successful_started_at():
+def _last_complete_started_at(network):
+    for started_at, summary_json in _recent_discovery_runs():
+        parsed = _coverage_from_summary(summary_json, network)
+        if parsed is not True:
+            continue
+        moment = _parse_time(started_at)
+        if moment is not None:
+            return moment
+    return None
+
+
+def _coverage_from_summary(summary_json, network):
+    if not summary_json:
+        return False
+    try:
+        summary = json.loads(summary_json)
+    except ValueError:
+        return False
+    if not isinstance(summary, dict):
+        return False
+    pagination = summary.get("pagination")
+    if not isinstance(pagination, dict):
+        return False
+    info = pagination.get(network)
+    if not isinstance(info, dict):
+        return False
+    return info.get("coverage_complete") is True
+
+
+def _recent_discovery_runs():
     path = database.DB_NAME
     if not path or not os.path.exists(path):
-        return None
+        return []
     uri = Path(path).resolve().as_uri() + "?mode=ro"
     try:
         connection = sqlite3.connect(uri, uri=True)
     except sqlite3.Error:
-        return None
+        return []
     try:
-        row = connection.execute("""
-            SELECT started_at
+        return connection.execute("""
+            SELECT started_at, summary_json
             FROM monitor_job_runs
             WHERE job_name = ?
-              AND status = 'ok'
             ORDER BY id DESC
-            LIMIT 1
-        """, (JOB_NEW_PAIRS_DISCOVERY,)).fetchone()
+            LIMIT ?
+        """, (JOB_NEW_PAIRS_DISCOVERY, COVERAGE_HISTORY_LIMIT)).fetchall()
     except sqlite3.Error:
-        return None
+        return []
     finally:
         connection.close()
-    if row is None:
-        return None
-    return _parse_time(row[0])
 
 
 def _oldest_pool_created_at(pools):

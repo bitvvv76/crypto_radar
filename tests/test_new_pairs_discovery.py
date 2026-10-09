@@ -952,7 +952,10 @@ class DiscoveryRunTest(unittest.TestCase):
         self.assertEqual(summary["saved_new_ideas"], 1)
         self.assertEqual(summary["pagination"]["solana"]["pages_fetched"], 1)
         self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "rate_limited")
-        self.assertNotIn("eth", summary["pagination"])
+        self.assertEqual(summary["pagination"]["eth"]["pages_fetched"], 0)
+        self.assertEqual(summary["pagination"]["eth"]["stop_reason"], "rate_limited")
+        self.assertFalse(summary["pagination"]["eth"]["coverage_complete"])
+        self.assertFalse(summary["coverage_complete"])
         self.assertEqual([row[0] for row in self.pair_rows()], [spec["address"]])
 
     def test_malformed_page_two_does_not_drop_page_one(self):
@@ -982,9 +985,12 @@ class DiscoveryRunTest(unittest.TestCase):
         self.assertEqual(summary["pagination"]["solana"]["pages_fetched"], 1)
         self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "malformed_page")
         self.assertEqual(summary["pagination"]["base"]["stop_reason"], "empty_page")
+        self.assertFalse(summary["pagination"]["solana"]["coverage_complete"])
+        self.assertTrue(summary["pagination"]["base"]["coverage_complete"])
+        self.assertFalse(summary["coverage_complete"])
         self.assertEqual([row[0] for row in self.pair_rows()], [spec["address"]])
         run = latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)
-        self.assertEqual(run["status"], "ok")
+        self.assertEqual(run["status"], "partial")
 
     def test_repeated_discovery_run_stays_idempotent_across_pages(self):
         spec = self.spec(240, "USDC", "80", created="2026-10-09T12:00:00Z")
@@ -999,6 +1005,285 @@ class DiscoveryRunTest(unittest.TestCase):
         self.assertEqual(candidate["seen_count"], 3)
         self.assertEqual(candidate["first_seen_at"], "2026-10-09 12:00:00")
         self.assertEqual(candidate["status"], "existing_pair")
+
+    def test_cutoff_reached_marks_coverage_complete(self):
+        old = self.spec(251, "USDC", "80", created="2026-10-09T11:00:00Z")
+        pools, included, pairs = self.materialize([old])
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=lambda network, page: {
+                "ok": True,
+                "pools": pools if page == 1 else [],
+                "included": included if page == 1 else [],
+            },
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        info = summary["pagination"]["solana"]
+        self.assertEqual(info["stop_reason"], "cutoff")
+        self.assertEqual(info["oldest_pool_created_at"], "2026-10-09T11:00:00Z")
+        self.assertTrue(info["coverage_complete"])
+        self.assertTrue(summary["coverage_complete"])
+        self.assertEqual(summary["networks_complete"], 1)
+        self.assertEqual(summary["networks_incomplete"], 0)
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "ok")
+
+    def test_empty_final_page_marks_coverage_complete(self):
+        fresh = self.spec(252, "USDC", "80", created="2026-10-09T12:00:00Z")
+        pools, included, pairs = self.materialize([fresh])
+        calls = []
+
+        def fetch(network, page):
+            calls.append(page)
+            if page == 1:
+                return {"ok": True, "pools": pools, "included": included}
+            return {"ok": True, "pools": [], "included": []}
+
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        info = summary["pagination"]["solana"]
+        self.assertEqual(calls, [1, 2])
+        self.assertEqual(info["stop_reason"], "empty_page")
+        self.assertEqual(info["pages_fetched"], 2)
+        self.assertEqual(info["oldest_pool_created_at"], "2026-10-09T12:00:00Z")
+        self.assertTrue(info["coverage_complete"])
+        self.assertTrue(summary["coverage_complete"])
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "ok")
+
+    def test_max_pages_before_cutoff_is_incomplete(self):
+        calls = []
+        pairs = {}
+
+        def fetch(network, page):
+            calls.append(page)
+            spec = self.spec(260 + page, "USDC", "80", created="2026-10-09T12:05:00Z")
+            pools, included, built = self.materialize([spec])
+            pairs.update(built)
+            return {"ok": True, "pools": pools, "included": included}
+
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        info = summary["pagination"]["solana"]
+        self.assertEqual(calls, [1, 2, 3])
+        self.assertEqual(info["stop_reason"], "max_pages")
+        self.assertEqual(info["pages_fetched"], 3)
+        self.assertEqual(info["cutoff"], "2026-10-09T11:30:00Z")
+        self.assertEqual(info["oldest_pool_created_at"], "2026-10-09T12:05:00Z")
+        self.assertFalse(info["coverage_complete"])
+        self.assertFalse(summary["coverage_complete"])
+        self.assertEqual(summary["networks_complete"], 0)
+        self.assertEqual(summary["networks_incomplete"], 1)
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "partial")
+
+    def test_rate_limit_marks_coverage_incomplete(self):
+        def fetch(network, page):
+            if network == "solana" and page == 1:
+                return {"ok": False, "error_kind": "rate_limited", "pools": [], "included": []}
+            raise AssertionError("request after 429")
+
+        summary = run_discovery(
+            networks=["solana", "eth"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: None,
+            now=FIRST_SEEN,
+        )
+        self.assertEqual(summary["pagination"]["solana"]["stop_reason"], "rate_limited")
+        self.assertFalse(summary["pagination"]["solana"]["coverage_complete"])
+        self.assertEqual(summary["pagination"]["eth"]["pages_fetched"], 0)
+        self.assertEqual(summary["pagination"]["eth"]["stop_reason"], "rate_limited")
+        self.assertFalse(summary["pagination"]["eth"]["coverage_complete"])
+        self.assertFalse(summary["coverage_complete"])
+        self.assertEqual(summary["networks_incomplete"], 2)
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "partial")
+
+    def test_network_error_marks_coverage_incomplete(self):
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=lambda network, page: {
+                "ok": False,
+                "error_kind": "timeout",
+                "pools": [],
+                "included": [],
+            },
+            enrich_pair=lambda chain, address: None,
+            now=FIRST_SEEN,
+        )
+        info = summary["pagination"]["solana"]
+        self.assertEqual(info["stop_reason"], "timeout")
+        self.assertEqual(info["pages_fetched"], 0)
+        self.assertFalse(info["coverage_complete"])
+        self.assertFalse(summary["coverage_complete"])
+        self.assertEqual(summary["networks_incomplete"], 1)
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "partial")
+
+    def test_malformed_later_page_marks_coverage_incomplete(self):
+        kept = self.spec(270, "USDC", "80", created="2026-10-09T12:00:00Z")
+        pools, included, pairs = self.materialize([kept])
+
+        def fetch(network, page):
+            if page == 1:
+                return {"ok": True, "pools": pools, "included": included}
+            raise RuntimeError("malformed page")
+
+        summary = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        info = summary["pagination"]["solana"]
+        self.assertEqual(info["stop_reason"], "malformed_page")
+        self.assertEqual(info["pages_fetched"], 1)
+        self.assertEqual(info["oldest_pool_created_at"], "2026-10-09T12:00:00Z")
+        self.assertFalse(info["coverage_complete"])
+        self.assertFalse(summary["coverage_complete"])
+        self.assertEqual(summary["saved_new_ideas"], 1)
+        self.assertEqual([row[0] for row in self.pair_rows()], [kept["address"]])
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "partial")
+
+    def test_incomplete_run_does_not_move_the_next_cutoff(self):
+        pairs = {}
+
+        def fetch(network, page):
+            spec = self.spec(280 + page, "USDC", "80", created="2026-10-09T12:05:00Z")
+            pools, included, built = self.materialize([spec])
+            pairs.update(built)
+            return {"ok": True, "pools": pools, "included": included}
+
+        first = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertFalse(first["coverage_complete"])
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "partial")
+        second = run_discovery(
+            networks=["solana"],
+            fetch_pools=lambda network, page: {"ok": True, "pools": [], "included": []},
+            enrich_pair=lambda chain, address: None,
+            now=SECOND_SEEN,
+        )
+        self.assertEqual(second["cutoff_basis"], "initial_lookback")
+        self.assertEqual(second["cutoff"], "2026-10-09T11:40:00Z")
+        self.assertEqual(second["pagination"]["solana"]["cutoff_basis"], "initial_lookback")
+
+    def test_complete_run_becomes_the_next_cutoff_reference(self):
+        old = self.spec(290, "USDC", "80", created="2026-10-09T11:00:00Z")
+        pools, included, pairs = self.materialize([old])
+        first = run_discovery(
+            networks=["solana"],
+            fetch_pools=lambda network, page: {
+                "ok": True,
+                "pools": pools if page == 1 else [],
+                "included": included if page == 1 else [],
+            },
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertTrue(first["coverage_complete"])
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "ok")
+        second = run_discovery(
+            networks=["solana"],
+            fetch_pools=lambda network, page: {"ok": True, "pools": [], "included": []},
+            enrich_pair=lambda chain, address: None,
+            now=SECOND_SEEN,
+        )
+        self.assertEqual(second["cutoff_basis"], "overlap")
+        self.assertEqual(second["pagination"]["solana"]["cutoff"], "2026-10-09T11:45:00Z")
+        self.assertEqual(second["pagination"]["solana"]["cutoff_basis"], "overlap")
+
+    def test_one_incomplete_network_does_not_complete_the_run(self):
+        pairs = {}
+
+        def fetch(network, page):
+            if network == "solana":
+                spec = self.spec(330 + page, "USDC", "80", created="2026-10-09T12:05:00Z")
+            elif page == 1:
+                spec = self.spec(340, "USDC", "80", network="eth", created="2026-10-09T10:00:00Z")
+            else:
+                return {"ok": True, "pools": [], "included": []}
+            pools, included, built = self.materialize([spec])
+            pairs.update(built)
+            return {"ok": True, "pools": pools, "included": included}
+
+        first = run_discovery(
+            networks=["solana", "eth"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        self.assertFalse(first["pagination"]["solana"]["coverage_complete"])
+        self.assertEqual(first["pagination"]["solana"]["stop_reason"], "max_pages")
+        self.assertTrue(first["pagination"]["eth"]["coverage_complete"])
+        self.assertEqual(first["pagination"]["eth"]["stop_reason"], "cutoff")
+        self.assertFalse(first["coverage_complete"])
+        self.assertEqual(first["networks_complete"], 1)
+        self.assertEqual(first["networks_incomplete"], 1)
+        self.assertEqual(first["cutoff_basis"], "initial_lookback")
+        self.assertEqual(latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"], "partial")
+
+        second = run_discovery(
+            networks=["solana", "eth"],
+            fetch_pools=lambda network, page: {"ok": True, "pools": [], "included": []},
+            enrich_pair=lambda chain, address: None,
+            now=SECOND_SEEN,
+        )
+        self.assertEqual(second["cutoff_basis"], "per_network")
+        self.assertEqual(second["pagination"]["solana"]["cutoff_basis"], "initial_lookback")
+        self.assertEqual(second["pagination"]["solana"]["cutoff"], "2026-10-09T11:40:00Z")
+        self.assertEqual(second["pagination"]["eth"]["cutoff_basis"], "overlap")
+        self.assertEqual(second["pagination"]["eth"]["cutoff"], "2026-10-09T11:45:00Z")
+
+    def test_repeat_after_incomplete_coverage_stays_idempotent(self):
+        pools_by_page = {}
+        included_by_page = {}
+        pairs = {}
+        for page in (1, 2, 3):
+            spec = self.spec(350 + page, "USDC", "80", created="2026-10-09T12:05:00Z")
+            pools, included, built = self.materialize([spec])
+            pools_by_page[page] = pools
+            included_by_page[page] = included
+            pairs.update(built)
+
+        def fetch(network, page):
+            return {
+                "ok": True,
+                "pools": pools_by_page[page],
+                "included": included_by_page[page],
+            }
+
+        first = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=FIRST_SEEN,
+        )
+        second = run_discovery(
+            networks=["solana"],
+            fetch_pools=fetch,
+            enrich_pair=lambda chain, address: self.lookup_dex(pairs, chain, address),
+            now=SECOND_SEEN,
+        )
+        self.assertFalse(first["coverage_complete"])
+        self.assertFalse(second["coverage_complete"])
+        self.assertEqual(second["cutoff_basis"], "initial_lookback")
+        self.assertEqual(first["saved_new_ideas"], 3)
+        self.assertEqual(second["saved_new_ideas"], 0)
+        self.assertEqual(second["existing_pairs"], 3)
+        self.assertEqual(len(self.pair_rows()), 3)
+        self.assertEqual(self.table_count("watchlist"), 3)
+        for page in (1, 2, 3):
+            candidate = get_candidate(SOURCE_GECKO, "solana", self.spec(350 + page, "USDC", "80")["address"])
+            self.assertEqual(candidate["seen_count"], 2)
 
     def test_real_usdc_address_is_accepted(self):
         spec = self.spec(301, "USDC", "80")
