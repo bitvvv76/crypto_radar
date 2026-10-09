@@ -43,6 +43,7 @@ from human_approval import (
 )
 from paper_engine import format_datetime, utc_now
 from position_notifications import deliver_closed_positions, handle_positions_message
+from monitor_store import redact_text
 
 
 LABEL_BUY_EXECUTED = "✅ BUY EXECUTED"
@@ -56,6 +57,28 @@ _EMPTY_KEYBOARD = {"inline_keyboard": []}
 
 class TelegramApiError(Exception):
     pass
+
+
+class TelegramRejectedError(TelegramApiError):
+    """Telegram вернул ok=false: сообщение не принято."""
+
+
+def _response_body(response):
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def _rejection_text(body):
+    parts = ["telegram rejected the message"]
+    code = body.get("error_code")
+    description = body.get("description")
+    if isinstance(code, int):
+        parts.append("error_code={0}".format(code))
+    if isinstance(description, str) and description.strip():
+        parts.append(description.strip())
+    return "; ".join(parts)
 
 
 class BotSettings:
@@ -107,11 +130,16 @@ class TelegramClient:
         url = "{0}/bot{1}/{2}".format(self.base_url, self.token, method)
         try:
             response = self.session.post(url, json=payload, timeout=timeout)
-            response.raise_for_status()
-            body = response.json()
         except Exception:
             raise TelegramApiError("telegram request failed")
-        if not isinstance(body, dict) or not body.get("ok"):
+        body = _response_body(response)
+        if isinstance(body, dict) and body.get("ok") is False:
+            raise TelegramRejectedError(_rejection_text(body))
+        try:
+            response.raise_for_status()
+        except Exception:
+            raise TelegramApiError("telegram request failed")
+        if not isinstance(body, dict) or body.get("ok") is not True:
             raise TelegramApiError("telegram request failed")
         return body.get("result")
 
@@ -418,11 +446,12 @@ def main(argv=None):
             )
             offset = report["offset"]
             _print_cycle(report)
+            _deliver_monitoring_pass(db_path, client, settings, report)
             if report["errors"]:
                 time.sleep(3)
         except Exception as error:
             print("TELEGRAM APPROVAL: сбой цикла UI")
-            print(error)
+            print(redact_text(error))
             time.sleep(5)
         if args.once:
             return 0
@@ -561,6 +590,32 @@ def _print_cycle(report):
         print("TELEGRAM APPROVAL: решений", len(acted))
     if report.get("errors"):
         print("TELEGRAM APPROVAL: ошибка Telegram API")
+
+
+def _deliver_monitoring_pass(db_path, client, settings, report):
+    """Тот же процесс и тот же клиент. Второй polling не запускается."""
+    from daily_report import deliver_monitoring
+
+    try:
+        monitoring = deliver_monitoring(
+            db_path,
+            client,
+            settings.chat_id,
+            telegram_errors=report.get("errors") or [],
+        )
+    except Exception as error:
+        print("TELEGRAM: сбой мониторинга")
+        print(redact_text(error))
+        return
+    daily = monitoring.get("daily") or {}
+    if daily.get("sent"):
+        print("TELEGRAM: ежедневный отчёт отправлен")
+    elif daily.get("status") == "delivery_unknown":
+        print("TELEGRAM: доставка ежедневного отчёта не подтверждена")
+    elif daily.get("status") == "failed":
+        print("TELEGRAM: ежедневный отчёт не доставлен")
+    if monitoring.get("health_sent"):
+        print("TELEGRAM: уведомление контроля исправности отправлено")
 
 
 if __name__ == "__main__":
