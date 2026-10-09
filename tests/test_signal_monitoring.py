@@ -2,6 +2,7 @@ import inspect
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from io import StringIO
@@ -31,6 +32,7 @@ from monitor_store import (
     latest_job_run,
     list_health_state,
     record_job_run,
+    resolve_unknown_delivery,
     save_health_states,
 )
 from paper_engine import (
@@ -243,13 +245,18 @@ class SignalMonitoringTest(unittest.TestCase):
         crashing.crash = SystemExit("crash before result")
         with self.assertRaises(SystemExit):
             send_due_daily_report(self.db_path, crashing, 77, now=NOW)
-        self.assertEqual(get_daily_report(self.db_path, "2026-10-08")["status"], "dispatching")
+        self.assertEqual(get_daily_report(self.db_path, "2026-10-08")["status"], "delivery_unknown")
 
         client = FakeTelegram()
-        skipped = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        skipped = send_due_daily_report(
+            self.db_path,
+            client,
+            77,
+            now=NOW + timedelta(hours=3),
+        )
 
         self.assertFalse(skipped["sent"])
-        self.assertEqual(skipped["status"], "dispatching")
+        self.assertEqual(skipped["status"], "delivery_unknown")
         self.assertEqual(client.sent, [])
 
     def test_empty_telegram_result_can_be_retried(self):
@@ -262,6 +269,175 @@ class SignalMonitoringTest(unittest.TestCase):
         self.assertEqual(first["status"], "failed")
         self.assertTrue(second["sent"])
         self.assertEqual(len(empty.sent), 1)
+
+    def test_crash_before_send_recovers_after_lease(self):
+        client = FakeTelegram()
+
+        def crash_before_send():
+            raise SystemExit("before send")
+
+        with self.assertRaises(SystemExit):
+            send_due_daily_report(
+                self.db_path,
+                client,
+                77,
+                now=NOW,
+                before_send=crash_before_send,
+            )
+        self.assertEqual(client.sent, [])
+        self.assertEqual(get_daily_report(self.db_path, "2026-10-08")["status"], "dispatching")
+
+        fresh = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        self.assertFalse(fresh["sent"])
+        self.assertEqual(fresh["status"], "dispatching")
+        self.assertEqual(client.sent, [])
+
+        recovered = send_due_daily_report(
+            self.db_path,
+            client,
+            77,
+            now=NOW + timedelta(minutes=2),
+        )
+        repeated = send_due_daily_report(
+            self.db_path,
+            client,
+            77,
+            now=NOW + timedelta(minutes=3),
+        )
+
+        self.assertTrue(recovered["sent"])
+        self.assertEqual(recovered["status"], "delivered")
+        self.assertFalse(repeated["sent"])
+        self.assertEqual(len(client.sent), 1)
+
+    def test_crash_after_accept_stays_unknown_until_operator_resolves(self):
+        client = FakeTelegram()
+
+        def accept_then_stop(chat_id, text, reply_markup=None):
+            client.sent.append({"chat_id": chat_id, "text": text})
+            return {"message_id": 41}
+
+        client.send_message = accept_then_stop
+        with patch(
+            "daily_report.mark_daily_report_delivered",
+            side_effect=SystemExit("before delivered"),
+        ):
+            with self.assertRaises(SystemExit):
+                send_due_daily_report(self.db_path, client, 77, now=NOW)
+
+        stored = get_daily_report(self.db_path, "2026-10-08")
+        retry = send_due_daily_report(
+            self.db_path,
+            client,
+            77,
+            now=NOW + timedelta(hours=2),
+        )
+        text = render_daily_report(build_daily_report(self.db_path, NOW))
+        health = evaluate_health(self.db_path, NOW)
+        save_health_states(self.db_path, health["states"], "2026-10-09 08:00:00")
+        quiet = evaluate_health(self.db_path, NOW)
+        refused = resolve_unknown_delivery(self.db_path, "2026-10-08", "delivered")
+        resolved = resolve_unknown_delivery(
+            self.db_path,
+            "2026-10-08",
+            "delivered",
+            message_id=41,
+            resolved_at="2026-10-09 09:00:00",
+        )
+        after = send_due_daily_report(
+            self.db_path,
+            client,
+            77,
+            now=NOW + timedelta(hours=3),
+        )
+
+        self.assertEqual(stored["status"], "delivery_unknown")
+        self.assertIsNone(stored["message_id"])
+        self.assertFalse(retry["sent"])
+        self.assertEqual(retry["status"], "delivery_unknown")
+        self.assertEqual(len(client.sent), 1)
+        self.assertIn("Неопределённая доставка: 2026-10-08", text)
+        self.assertIn(
+            "daily_report",
+            [item["alert_key"] for item in health["changes"]],
+        )
+        self.assertNotIn(
+            "daily_report",
+            [item["alert_key"] for item in quiet["changes"]],
+        )
+        self.assertFalse(refused["resolved"])
+        self.assertEqual(refused["reason"], "message_id_required")
+        self.assertTrue(resolved["resolved"])
+        self.assertEqual(resolved["status"], "delivered")
+        self.assertFalse(after["sent"])
+        self.assertEqual(len(client.sent), 1)
+        self.assertNotIn(TOKEN, text)
+
+    def test_operator_can_allow_one_resend_after_unknown_delivery(self):
+        client = FakeTelegram()
+
+        def accept_then_stop(chat_id, text, reply_markup=None):
+            client.sent.append({"chat_id": chat_id, "text": text})
+            return {"message_id": 7}
+
+        client.send_message = accept_then_stop
+        with patch(
+            "daily_report.mark_daily_report_delivered",
+            side_effect=SystemExit("before delivered"),
+        ):
+            with self.assertRaises(SystemExit):
+                send_due_daily_report(self.db_path, client, 77, now=NOW)
+
+        blocked = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        self.assertFalse(blocked["sent"])
+        code = daily_report.main([
+            "--db",
+            self.db_path,
+            "--resolve-unknown",
+            "2026-10-08",
+            "--as",
+            "failed",
+        ])
+        client.send_message = FakeTelegram.send_message.__get__(client, FakeTelegram)
+        client.sent.clear()
+        sent = send_due_daily_report(self.db_path, client, 77, now=NOW)
+        duplicate = send_due_daily_report(self.db_path, client, 77, now=NOW)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(get_daily_report(self.db_path, "2026-10-08")["status"], "delivered")
+        self.assertTrue(sent["sent"])
+        self.assertFalse(duplicate["sent"])
+        self.assertEqual(len(client.sent), 1)
+
+    def test_parallel_sends_do_not_duplicate_the_report(self):
+        barrier = threading.Barrier(2)
+        sent = []
+        errors = []
+
+        class Client:
+            def send_message(self, chat_id, text, reply_markup=None):
+                sent.append(text)
+                return {"message_id": 1}
+
+            def get_updates(self, *args, **kwargs):
+                raise AssertionError("polling")
+
+        def worker():
+            try:
+                barrier.wait(timeout=5)
+                send_due_daily_report(self.db_path, Client(), 77, now=NOW)
+            except Exception as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(get_daily_report(self.db_path, "2026-10-08")["status"], "delivered")
 
     def test_monitoring_delivery_does_not_poll(self):
         client = FakeTelegram()

@@ -11,6 +11,7 @@ from monitor_store import (
     JOB_SCANNER,
     latest_job_run,
     list_health_state,
+    list_unknown_daily_reports,
     redact_text,
 )
 
@@ -22,6 +23,7 @@ ALERT_SCANNER = "scanner"
 ALERT_PRICE_CHECK = "price_check"
 ALERT_API = "api"
 ALERT_TELEGRAM = "telegram"
+ALERT_DAILY_REPORT = "daily_report"
 
 STATE_OK = "ok"
 STATE_NEVER_RAN = "never_ran"
@@ -51,9 +53,16 @@ def evaluate_health(
         ),
         ALERT_API: _api_state(db_path),
         ALERT_TELEGRAM: _telegram_state(telegram_errors),
+        ALERT_DAILY_REPORT: _daily_report_state(db_path),
     }
     changes = []
-    for key in (ALERT_SCANNER, ALERT_PRICE_CHECK, ALERT_API, ALERT_TELEGRAM):
+    for key in (
+        ALERT_SCANNER,
+        ALERT_PRICE_CHECK,
+        ALERT_API,
+        ALERT_TELEGRAM,
+        ALERT_DAILY_REPORT,
+    ):
         current = desired[key]
         stored = previous.get(key)
         stored_state = None if stored is None else stored.get("state")
@@ -132,6 +141,17 @@ def _api_state(db_path):
     }
 
 
+def _daily_report_state(db_path):
+    dates = list_unknown_daily_reports(db_path)
+    if not dates:
+        return {"state": STATE_OK, "detail": "неподтверждённых отчётов нет"}
+    fingerprint = ",".join(dates)
+    return {
+        "state": "unknown:{0}".format(fingerprint),
+        "detail": fingerprint,
+    }
+
+
 def _telegram_state(telegram_errors):
     public = []
     for item in telegram_errors or []:
@@ -169,6 +189,8 @@ def _ok_title(key):
         return "Проверки цены снова выполняются"
     if key == ALERT_API:
         return "Ошибки API в последнем запуске отсутствуют"
+    if key == ALERT_DAILY_REPORT:
+        return "Неопределённая доставка ежедневного отчёта снята"
     return "Доставка Telegram снова проходит"
 
 
@@ -183,6 +205,8 @@ def _problem_title(key, state):
         return "Проверки цены не выполняются"
     if key == ALERT_API:
         return "Ошибка API"
+    if key == ALERT_DAILY_REPORT:
+        return "Доставка ежедневного отчёта не подтверждена"
     return "Ошибка доставки Telegram"
 
 

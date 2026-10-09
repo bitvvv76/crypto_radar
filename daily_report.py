@@ -13,15 +13,22 @@ from datetime import datetime, timedelta, timezone
 import database
 from health_monitor import evaluate_health, render_health_alert
 from monitor_store import (
+    DISPATCH_LEASE,
     JOB_AUTO_CHECK,
     JOB_SCANNER,
+    REPORT_DELIVERED,
+    REPORT_FAILED,
     claim_daily_report,
     get_daily_report,
     job_runs_between,
     latest_job_run,
+    list_unknown_daily_reports,
     mark_daily_report_delivered,
     mark_daily_report_failed,
+    mark_daily_report_unknown,
     redact_text,
+    release_daily_report_before_send,
+    resolve_unknown_delivery,
     save_health_states,
     utc_now_text,
 )
@@ -65,6 +72,7 @@ def build_daily_report(db_path, now):
             "approval": _read_portfolio(db_path, APPROVAL_PORTFOLIO_ID),
         },
         "market_data_errors": _market_data_errors(runs),
+        "unknown_deliveries": list_unknown_daily_reports(db_path),
         "last_scanner_run": latest_job_run(db_path, JOB_SCANNER),
         "last_auto_check_run": latest_job_run(db_path, JOB_AUTO_CHECK),
     }
@@ -110,68 +118,98 @@ def render_daily_report(report):
     lines.append("Ошибки проверки рыночных данных: {0}".format(
         _show_count(report.get("market_data_errors"))
     ))
+    lines.append("Неопределённая доставка: {0}".format(
+        _show_unknown(report.get("unknown_deliveries"))
+    ))
     lines.append("Сканер: {0}".format(_run_text(report.get("last_scanner_run"))))
     lines.append("Автопроверки: {0}".format(_run_text(report.get("last_auto_check_run"))))
     return "\n".join(lines)
 
 
-def send_due_daily_report(db_path, client, chat_id, now=None):
+def send_due_daily_report(
+    db_path,
+    client,
+    chat_id,
+    now=None,
+    before_send=None,
+    lease=DISPATCH_LEASE,
+):
     """Одна попытка отправить отчёт завершённых суток UTC."""
     moment = _as_datetime(now) if now is not None else datetime.now(timezone.utc).replace(tzinfo=None)
     start, _end = completed_report_window(moment)
     report_date = start.strftime("%Y-%m-%d")
     attempted_at = utc_now_text(moment)
-    decision, _row = claim_daily_report(db_path, report_date, attempted_at)
+    decision, claimed = claim_daily_report(
+        db_path,
+        report_date,
+        attempted_at,
+        lease=lease,
+    )
     if decision != "send":
-        stored = get_daily_report(db_path, report_date)
-        status = None if stored is None else stored.get("status")
-        return {
-            "sent": False,
-            "report_date": report_date,
-            "status": status or "skipped",
-            "error": None,
-        }
+        return _skipped_delivery(db_path, report_date)
 
-    report = build_daily_report(db_path, moment)
-    text = render_daily_report(report)
+    claim_stamp = None if claimed is None else claimed.get("attempted_at")
     try:
-        sent = client.send_message(chat_id, text)
-        message_id = _message_id_of(sent)
-        if message_id is None:
-            mark_daily_report_failed(
-                db_path,
-                report_date,
-                "telegram response has no message_id",
-                utc_now_text(moment),
-            )
-            return {
-                "sent": False,
-                "report_date": report_date,
-                "status": "failed",
-                "error": "telegram response has no message_id",
-            }
-        mark_daily_report_delivered(
+        text = render_daily_report(build_daily_report(db_path, moment))
+        if before_send is not None:
+            before_send()
+    except Exception as error:
+        release_daily_report_before_send(
             db_path,
             report_date,
-            message_id,
+            claim_stamp,
+            error,
             utc_now_text(moment),
         )
         return {
-            "sent": True,
+            "sent": False,
             "report_date": report_date,
-            "status": "delivered",
-            "error": None,
-            "message_id": message_id,
+            "status": REPORT_FAILED,
+            "error": redact_text(error),
         }
+
+    if not mark_daily_report_unknown(db_path, report_date, claim_stamp):
+        return _skipped_delivery(db_path, report_date)
+
+    try:
+        sent = client.send_message(chat_id, text)
     except Exception as error:
         public = redact_text(error)
         mark_daily_report_failed(db_path, report_date, public, utc_now_text(moment))
         return {
             "sent": False,
             "report_date": report_date,
-            "status": "failed",
+            "status": REPORT_FAILED,
             "error": public,
         }
+
+    message_id = _message_id_of(sent)
+    if message_id is None:
+        mark_daily_report_failed(
+            db_path,
+            report_date,
+            "telegram response has no message_id",
+            utc_now_text(moment),
+        )
+        return {
+            "sent": False,
+            "report_date": report_date,
+            "status": REPORT_FAILED,
+            "error": "telegram response has no message_id",
+        }
+    mark_daily_report_delivered(
+        db_path,
+        report_date,
+        message_id,
+        utc_now_text(moment),
+    )
+    return {
+        "sent": True,
+        "report_date": report_date,
+        "status": REPORT_DELIVERED,
+        "error": None,
+        "message_id": message_id,
+    }
 
 
 def deliver_monitoring(db_path, client, chat_id, now=None, telegram_errors=None):
@@ -313,9 +351,28 @@ def main(argv=None):
     parser.add_argument("--db", dest="db_path", default=None)
     parser.add_argument("--send", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resolve-unknown", metavar="YYYY-MM-DD")
+    parser.add_argument("--as", dest="resolution", choices=(REPORT_DELIVERED, REPORT_FAILED))
+    parser.add_argument("--message-id", type=int)
     args = parser.parse_args(argv)
     db_path = args.db_path or database.DB_NAME
     now = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+    if args.resolve_unknown:
+        if args.resolution is None:
+            print("Для неопределённой доставки нужно --as delivered или --as failed")
+            return 2
+        result = resolve_unknown_delivery(
+            db_path,
+            args.resolve_unknown,
+            args.resolution,
+            message_id=args.message_id,
+            resolved_at=utc_now_text(now),
+        )
+        print("Разрешение {0}: {1}".format(
+            args.resolve_unknown,
+            result.get("status") or result.get("reason"),
+        ))
+        return 0 if result.get("resolved") else 1
     if args.dry_run or not args.send:
         print(render_daily_report(build_daily_report(db_path, now)))
         return 0
@@ -517,6 +574,25 @@ def _show_count(value):
     if value is None:
         return MISSING
     return str(value)
+
+
+def _show_unknown(value):
+    if value is None:
+        return MISSING
+    if not value:
+        return "нет"
+    return ", ".join(str(item) for item in value)
+
+
+def _skipped_delivery(db_path, report_date):
+    stored = get_daily_report(db_path, report_date)
+    status = None if stored is None else stored.get("status")
+    return {
+        "sent": False,
+        "report_date": report_date,
+        "status": status or "skipped",
+        "error": None,
+    }
 
 
 def _show_money(value):

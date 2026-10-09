@@ -8,7 +8,7 @@
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import database
 
@@ -19,6 +19,8 @@ JOB_AUTO_CHECK = "auto_check"
 REPORT_FAILED = "failed"
 REPORT_DISPATCHING = "dispatching"
 REPORT_DELIVERED = "delivered"
+REPORT_UNKNOWN = "delivery_unknown"
+DISPATCH_LEASE = timedelta(minutes=2)
 
 _TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b")
 _SECRET_ASSIGN_RE = re.compile(
@@ -184,30 +186,55 @@ def get_daily_report(db_path, report_date):
         connection.close()
 
 
-def claim_daily_report(db_path, report_date, attempted_at):
+def claim_daily_report(db_path, report_date, attempted_at, lease=DISPATCH_LEASE):
     """
     Резервирует одну отправку отчёта за сутки.
 
-    delivered и dispatching повторно не отправляются.
-    failed можно взять снова.
+    delivered и delivery_unknown повторно не отправляются.
+    failed отправляется снова.
+    dispatching старше lease возвращается в очередь: вызов Telegram ещё не начат.
+    Свежий dispatching пропускается, чтобы две попытки не шли параллельно.
     """
     ensure_monitor_tables(db_path)
     connection = _connect(db_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute("""
+        current = _row(connection.execute("""
             SELECT *
             FROM monitor_daily_reports
             WHERE report_date = ?
             LIMIT 1
-        """, (report_date,)).fetchone()
-        current = _row(row)
+        """, (report_date,)).fetchone())
         if current is not None and current["status"] in (
             REPORT_DELIVERED,
-            REPORT_DISPATCHING,
+            REPORT_UNKNOWN,
         ):
             connection.execute("COMMIT")
             return "skip", current
+        if current is not None and current["status"] == REPORT_DISPATCHING:
+            if not _dispatch_is_stale(current.get("attempted_at"), attempted_at, lease):
+                connection.execute("COMMIT")
+                return "skip", current
+            cursor = connection.execute("""
+                UPDATE monitor_daily_reports
+                SET status = ?,
+                    attempted_at = ?,
+                    error_text = NULL
+                WHERE report_date = ?
+                  AND status = ?
+                  AND attempted_at = ?
+            """, (
+                REPORT_DISPATCHING,
+                attempted_at,
+                report_date,
+                REPORT_DISPATCHING,
+                current.get("attempted_at"),
+            ))
+            if cursor.rowcount != 1:
+                connection.execute("COMMIT")
+                return "skip", _load_daily_report(connection, report_date)
+            connection.execute("COMMIT")
+            return "send", get_daily_report(db_path, report_date)
         if current is None:
             connection.execute("""
                 INSERT INTO monitor_daily_reports (
@@ -236,13 +263,7 @@ def claim_daily_report(db_path, report_date, attempted_at):
             ))
             if cursor.rowcount != 1:
                 connection.execute("COMMIT")
-                fresh = connection.execute("""
-                    SELECT *
-                    FROM monitor_daily_reports
-                    WHERE report_date = ?
-                    LIMIT 1
-                """, (report_date,)).fetchone()
-                return "skip", _row(fresh)
+                return "skip", _load_daily_report(connection, report_date)
         connection.execute("COMMIT")
         return "send", get_daily_report(db_path, report_date)
     except Exception:
@@ -250,6 +271,34 @@ def claim_daily_report(db_path, report_date, attempted_at):
             connection.execute("ROLLBACK")
         except sqlite3.Error:
             pass
+        raise
+    finally:
+        connection.close()
+
+
+def mark_daily_report_unknown(db_path, report_date, attempted_at):
+    """Фиксирует вход в sendMessage. После этого автоматического повтора нет."""
+    ensure_monitor_tables(db_path)
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute("""
+            UPDATE monitor_daily_reports
+            SET status = ?
+            WHERE report_date = ?
+              AND status = ?
+              AND attempted_at = ?
+        """, (
+            REPORT_UNKNOWN,
+            report_date,
+            REPORT_DISPATCHING,
+            attempted_at,
+        ))
+        owned = cursor.rowcount == 1
+        connection.execute("COMMIT")
+        return owned
+    except Exception:
+        connection.execute("ROLLBACK")
         raise
     finally:
         connection.close()
@@ -273,9 +322,41 @@ def mark_daily_report_delivered(db_path, report_date, message_id, delivered_at):
             message_id,
             delivered_at,
             report_date,
-            REPORT_DISPATCHING,
+            REPORT_UNKNOWN,
         ))
         connection.execute("COMMIT")
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
+def release_daily_report_before_send(db_path, report_date, attempted_at, error_text, failed_at):
+    """Подтверждённый отказ до вызова Telegram. Повтор разрешён."""
+    ensure_monitor_tables(db_path)
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute("""
+            UPDATE monitor_daily_reports
+            SET status = ?,
+                attempted_at = ?,
+                error_text = ?
+            WHERE report_date = ?
+              AND status = ?
+              AND attempted_at = ?
+        """, (
+            REPORT_FAILED,
+            failed_at,
+            redact_text(error_text),
+            report_date,
+            REPORT_DISPATCHING,
+            attempted_at,
+        ))
+        released = cursor.rowcount == 1
+        connection.execute("COMMIT")
+        return released
     except Exception:
         connection.execute("ROLLBACK")
         raise
@@ -300,12 +381,101 @@ def mark_daily_report_failed(db_path, report_date, error_text, failed_at):
             failed_at,
             redact_text(error_text),
             report_date,
-            REPORT_DISPATCHING,
+            REPORT_UNKNOWN,
         ))
         connection.execute("COMMIT")
     except Exception:
         connection.execute("ROLLBACK")
         raise
+    finally:
+        connection.close()
+
+
+def resolve_unknown_delivery(
+    db_path,
+    report_date,
+    resolution,
+    message_id=None,
+    resolved_at=None,
+):
+    """
+    Ручное закрытие delivery_unknown.
+
+    delivered записывает message_id и больше не отправляется.
+    failed означает, что Telegram сообщение не принял; следующий цикл может отправить его один раз.
+    """
+    if resolution not in (REPORT_DELIVERED, REPORT_FAILED):
+        return {"resolved": False, "status": None, "reason": "unsupported_resolution"}
+    if resolution == REPORT_DELIVERED and not (isinstance(message_id, int) and message_id > 0):
+        return {"resolved": False, "status": REPORT_UNKNOWN, "reason": "message_id_required"}
+    ensure_monitor_tables(db_path)
+    moment = resolved_at or utc_now_text()
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        current = _load_daily_report(connection, report_date)
+        if current is None or current["status"] != REPORT_UNKNOWN:
+            status = None if current is None else current["status"]
+            connection.execute("COMMIT")
+            return {"resolved": False, "status": status, "reason": "not_unknown"}
+        if resolution == REPORT_DELIVERED:
+            cursor = connection.execute("""
+                UPDATE monitor_daily_reports
+                SET status = ?,
+                    message_id = ?,
+                    delivered_at = ?,
+                    error_text = NULL
+                WHERE report_date = ?
+                  AND status = ?
+            """, (
+                REPORT_DELIVERED,
+                message_id,
+                moment,
+                report_date,
+                REPORT_UNKNOWN,
+            ))
+        else:
+            cursor = connection.execute("""
+                UPDATE monitor_daily_reports
+                SET status = ?,
+                    attempted_at = ?,
+                    error_text = ?
+                WHERE report_date = ?
+                  AND status = ?
+            """, (
+                REPORT_FAILED,
+                moment,
+                "operator confirmed the message was not accepted",
+                report_date,
+                REPORT_UNKNOWN,
+            ))
+        resolved = cursor.rowcount == 1
+        connection.execute("COMMIT")
+        stored = get_daily_report(db_path, report_date)
+        return {
+            "resolved": resolved,
+            "status": None if stored is None else stored.get("status"),
+            "reason": None if resolved else "not_unknown",
+        }
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
+def list_unknown_daily_reports(db_path):
+    if not _table_exists(db_path, "monitor_daily_reports"):
+        return None
+    connection = _connect(db_path)
+    try:
+        rows = connection.execute("""
+            SELECT report_date
+            FROM monitor_daily_reports
+            WHERE status = ?
+            ORDER BY report_date ASC
+        """, (REPORT_UNKNOWN,)).fetchall()
+        return [row["report_date"] for row in rows]
     finally:
         connection.close()
 
@@ -372,6 +542,37 @@ def _with_summary(row):
             summary = None
     row["summary"] = summary
     return row
+
+
+def _load_daily_report(connection, report_date):
+    return _row(connection.execute("""
+        SELECT *
+        FROM monitor_daily_reports
+        WHERE report_date = ?
+        LIMIT 1
+    """, (report_date,)).fetchone())
+
+
+def _dispatch_is_stale(attempted_at, now_text, lease):
+    started = _parse_stamp(attempted_at)
+    moment = _parse_stamp(now_text)
+    if started is None or moment is None:
+        return True
+    return (moment - started) >= lease
+
+
+def _parse_stamp(value):
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None, microsecond=0)
+    if value is None:
+        return None
+    text = str(value).strip()
+    for time_format in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.strptime(text, time_format)
+        except ValueError:
+            continue
+    return None
 
 
 def _table_exists(db_path, table_name):

@@ -583,6 +583,8 @@ def _deliver_monitoring_pass(db_path, client, settings, report):
     daily = monitoring.get("daily") or {}
     if daily.get("sent"):
         print("TELEGRAM: ежедневный отчёт отправлен")
+    elif daily.get("status") == "delivery_unknown":
+        print("TELEGRAM: доставка ежедневного отчёта не подтверждена")
     elif daily.get("status") == "failed":
         print("TELEGRAM: ежедневный отчёт не доставлен")
     if monitoring.get("health_sent"):
