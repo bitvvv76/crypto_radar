@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from io import StringIO
@@ -19,13 +20,17 @@ import scoring
 from config import MIN_LIQUIDITY_USD
 from discovery_store import SOURCE_GECKO, SOURCE_LEGACY, get_candidate
 from gecko_discovery import (
+    GECKO_MIN_REQUEST_INTERVAL_SECONDS,
+    GeckoRequestLimiter,
     fetch_global_new_pools,
     fetch_new_pools,
     fetch_supported_networks,
+    get_request_limiter,
     parse_new_pool,
+    set_request_limiter,
 )
 from monitor_store import JOB_SCANNER, latest_job_run
-from network_map import mapping_for_network
+from network_map import discovery_networks, mapping_for_network
 from new_pairs_discovery import (
     JOB_NEW_PAIRS_DISCOVERY,
     MAX_PAGES_PER_NETWORK,
@@ -51,6 +56,17 @@ FIXTURE_PATH = os.path.join(
 )
 FIRST_SEEN = datetime(2026, 10, 9, 12, 0, 0)
 SECOND_SEEN = datetime(2026, 10, 9, 12, 10, 0)
+_PRODUCTION_LIMITER = get_request_limiter()
+
+
+def setUpModule():
+    # Существующие тесты ходят в адаптер пачкой. Нулевой интервал
+    # сохраняет их скорость: боевой sleeper в этот процесс не попадает.
+    set_request_limiter(GeckoRequestLimiter(interval_seconds=0))
+
+
+def tearDownModule():
+    set_request_limiter(_PRODUCTION_LIMITER)
 
 
 def load_fixture():
@@ -145,6 +161,33 @@ def gecko_pool(network, address, base_address, base_symbol, quote_address, quote
         {"id": "raydium", "type": "dex", "attributes": {"name": "Raydium"}},
     ]
     return pool, included
+
+
+class FakeClock:
+    def __init__(self, now=0.0):
+        self.now = now
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class LimiterGuard:
+    def __init__(self, limiter):
+        self.limiter = limiter
+        self.previous = None
+
+    def __enter__(self):
+        self.previous = set_request_limiter(self.limiter)
+        return self.limiter
+
+    def __exit__(self, exc_type, exc, tb):
+        set_request_limiter(self.previous)
+        return False
 
 
 class Response:
@@ -1595,6 +1638,264 @@ class DiscoveryRunTest(unittest.TestCase):
             ).fetchall()
         connection.close()
         return tables, data
+
+
+class GeckoRateLimiterTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "discovery.db")
+        self.original_db_name = database.DB_NAME
+        database.DB_NAME = self.db_path
+        database.create_tables()
+
+    def tearDown(self):
+        database.DB_NAME = self.original_db_name
+        self.temp_dir.cleanup()
+
+    def clocked_limiter(self):
+        clock = FakeClock()
+        limiter = GeckoRequestLimiter(clock=clock.monotonic, sleeper=clock.sleep)
+        return clock, limiter
+
+    def test_first_request_has_no_delay(self):
+        clock, limiter = self.clocked_limiter()
+        self.assertEqual(limiter.acquire(), 0.0)
+        self.assertEqual(clock.sleeps, [])
+        self.assertEqual(limiter.request_count, 1)
+
+    def test_second_immediate_request_waits_remaining_interval(self):
+        clock, limiter = self.clocked_limiter()
+        limiter.acquire()
+        self.assertEqual(limiter.acquire(), GECKO_MIN_REQUEST_INTERVAL_SECONDS)
+        self.assertEqual(clock.sleeps, [GECKO_MIN_REQUEST_INTERVAL_SECONDS])
+
+        partial_clock, partial = self.clocked_limiter()
+        partial.acquire()
+        partial_clock.now = 3.0
+        self.assertEqual(
+            partial.acquire(),
+            GECKO_MIN_REQUEST_INTERVAL_SECONDS - 3.0,
+        )
+        self.assertEqual(partial_clock.sleeps, [5.0])
+
+    def test_request_after_interval_does_not_wait(self):
+        clock, limiter = self.clocked_limiter()
+        limiter.acquire()
+        clock.now = GECKO_MIN_REQUEST_INTERVAL_SECONDS
+        self.assertEqual(limiter.acquire(), 0.0)
+        clock.now = 30.0
+        self.assertEqual(limiter.acquire(), 0.0)
+        self.assertEqual(clock.sleeps, [])
+
+    def test_all_gecko_endpoints_share_one_limiter(self):
+        clock, limiter = self.clocked_limiter()
+        calls = []
+
+        def getter(url, params, timeout):
+            calls.append((url, params))
+            if url.endswith("/api/v2/networks") and params.get("page") == 1:
+                return Response(200, {"data": [{
+                    "id": "eth",
+                    "type": "network",
+                    "attributes": {"name": "Ethereum"},
+                }]})
+            return Response(200, {"data": [], "included": []})
+
+        with LimiterGuard(limiter):
+            self.assertIs(get_request_limiter(), limiter)
+            new_pools = fetch_new_pools("solana", getter=getter)
+            global_pools = fetch_global_new_pools(getter=getter)
+            networks = fetch_supported_networks(getter=getter)
+
+        self.assertTrue(new_pools["ok"])
+        self.assertTrue(global_pools["ok"])
+        self.assertTrue(networks["ok"])
+        self.assertEqual(networks["networks"][0]["id"], "eth")
+        self.assertEqual(
+            [url for url, _params in calls],
+            [
+                "https://api.geckoterminal.com/api/v2/networks/solana/new_pools",
+                "https://api.geckoterminal.com/api/v2/networks/new_pools",
+                "https://api.geckoterminal.com/api/v2/networks",
+                "https://api.geckoterminal.com/api/v2/networks",
+            ],
+        )
+        self.assertEqual(limiter.request_count, 4)
+        self.assertEqual(clock.sleeps, [8.0, 8.0, 8.0])
+        self.assertEqual(get_request_limiter().interval_seconds, 0)
+
+    def test_pagination_uses_the_limiter(self):
+        clock, limiter = self.clocked_limiter()
+        calls = []
+
+        def fake_get(url, params=None, timeout=None, headers=None):
+            calls.append((url, params["page"]))
+            if params["page"] == 1:
+                return Response(200, {"data": [{
+                    "type": "pool",
+                    "attributes": {"pool_created_at": "2026-10-09T12:05:00Z"},
+                }], "included": []})
+            return Response(200, {"data": [], "included": []})
+
+        with LimiterGuard(limiter), patch(
+            "gecko_discovery.requests.get",
+            side_effect=fake_get,
+        ):
+            summary = run_discovery(
+                dry_run=True,
+                networks=["solana"],
+                enrich_pair=lambda chain, address: None,
+                now=FIRST_SEEN,
+            )
+
+        self.assertEqual(calls, [(
+            "https://api.geckoterminal.com/api/v2/networks/solana/new_pools",
+            1,
+        ), (
+            "https://api.geckoterminal.com/api/v2/networks/solana/new_pools",
+            2,
+        )])
+        self.assertEqual(clock.sleeps, [8.0])
+        self.assertEqual(limiter.request_count, 2)
+        info = summary["pagination"]["solana"]
+        self.assertEqual(info["pages_fetched"], 2)
+        self.assertEqual(info["stop_reason"], "empty_page")
+        self.assertTrue(info["coverage_complete"])
+        self.assertEqual(summary["max_pages"], MAX_PAGES_PER_NETWORK)
+
+    def test_different_networks_share_the_limiter(self):
+        clock, limiter = self.clocked_limiter()
+        calls = []
+        networks = discovery_networks()
+
+        def fake_get(url, params=None, timeout=None, headers=None):
+            calls.append(url)
+            return Response(200, {"data": [], "included": []})
+
+        with LimiterGuard(limiter), patch(
+            "gecko_discovery.requests.get",
+            side_effect=fake_get,
+        ):
+            summary = run_discovery(
+                dry_run=True,
+                networks=networks,
+                enrich_pair=lambda chain, address: None,
+                now=FIRST_SEEN,
+            )
+
+        self.assertEqual(len(calls), len(networks))
+        for network, url in zip(networks, calls):
+            self.assertIn("/networks/{0}/new_pools".format(network), url)
+        self.assertEqual(clock.sleeps, [8.0] * (len(networks) - 1))
+        self.assertEqual(limiter.request_count, len(networks))
+        for network in networks:
+            info = summary["pagination"][network]
+            self.assertEqual(info["pages_fetched"], 1)
+            self.assertEqual(info["stop_reason"], "empty_page")
+            self.assertTrue(info["coverage_complete"])
+        self.assertTrue(summary["coverage_complete"])
+
+    def test_http_429_keeps_incomplete_coverage_and_cutoff(self):
+        clock, limiter = self.clocked_limiter()
+        calls = []
+
+        def fake_get(url, params=None, timeout=None, headers=None):
+            calls.append((url, params["page"]))
+            if len(calls) == 1:
+                return Response(200, {"data": [{
+                    "type": "pool",
+                    "attributes": {"pool_created_at": "2026-10-09T12:05:00Z"},
+                }], "included": []})
+            return Response(429, broken=True)
+
+        with LimiterGuard(limiter), patch(
+            "gecko_discovery.requests.get",
+            side_effect=fake_get,
+        ):
+            summary = run_discovery(
+                networks=["solana", "eth"],
+                enrich_pair=lambda chain, address: None,
+                now=FIRST_SEEN,
+            )
+
+        self.assertEqual(calls, [
+            ("https://api.geckoterminal.com/api/v2/networks/solana/new_pools", 1),
+            ("https://api.geckoterminal.com/api/v2/networks/solana/new_pools", 2),
+        ])
+        self.assertEqual(clock.sleeps, [8.0])
+        self.assertEqual(limiter.request_count, 2)
+        self.assertTrue(summary["rate_limited"])
+        self.assertEqual(summary["api_errors"], 1)
+        self.assertEqual(summary["api_error_kinds"][0]["kind"], "rate_limited")
+        solana = summary["pagination"]["solana"]
+        eth = summary["pagination"]["eth"]
+        self.assertEqual(solana["pages_fetched"], 1)
+        self.assertEqual(solana["stop_reason"], "rate_limited")
+        self.assertFalse(solana["coverage_complete"])
+        self.assertEqual(eth["pages_fetched"], 0)
+        self.assertEqual(eth["stop_reason"], "rate_limited")
+        self.assertFalse(eth["coverage_complete"])
+        self.assertFalse(summary["coverage_complete"])
+        self.assertEqual(
+            latest_job_run(self.db_path, JOB_NEW_PAIRS_DISCOVERY)["status"],
+            "partial",
+        )
+
+        follow_up = run_discovery(
+            networks=["solana", "eth"],
+            fetch_pools=lambda network, page: {
+                "ok": True,
+                "pools": [],
+                "included": [],
+            },
+            enrich_pair=lambda chain, address: None,
+            now=SECOND_SEEN,
+        )
+        self.assertEqual(follow_up["cutoff_basis"], "initial_lookback")
+        self.assertEqual(follow_up["cutoff"], "2026-10-09T11:40:00Z")
+        self.assertEqual(
+            follow_up["pagination"]["solana"]["cutoff_basis"],
+            "initial_lookback",
+        )
+        self.assertEqual(
+            follow_up["pagination"]["eth"]["cutoff_basis"],
+            "initial_lookback",
+        )
+
+    def test_limiter_does_not_retry_429(self):
+        clock, limiter = self.clocked_limiter()
+        calls = []
+
+        def getter(url, params, timeout):
+            calls.append(url)
+            return Response(429, broken=True)
+
+        with LimiterGuard(limiter):
+            result = fetch_new_pools("arbitrum", getter=getter)
+
+        self.assertEqual(result["error_kind"], "rate_limited")
+        self.assertEqual(result["status_code"], 429)
+        self.assertEqual(result["pools"], [])
+        self.assertEqual(calls, [
+            "https://api.geckoterminal.com/api/v2/networks/arbitrum/new_pools",
+        ])
+        self.assertEqual(limiter.request_count, 1)
+        self.assertEqual(clock.sleeps, [])
+
+    def test_injected_clock_does_not_call_real_sleep(self):
+        self.assertEqual(GECKO_MIN_REQUEST_INTERVAL_SECONDS, 8.0)
+        self.assertEqual(_PRODUCTION_LIMITER.interval_seconds, 8.0)
+        self.assertIs(_PRODUCTION_LIMITER.clock, time.monotonic)
+        self.assertIs(_PRODUCTION_LIMITER.sleeper, time.sleep)
+        self.assertEqual(_PRODUCTION_LIMITER.request_count, 0)
+
+        with patch("time.sleep", side_effect=AssertionError("real sleep")):
+            clock, limiter = self.clocked_limiter()
+            limiter.acquire()
+            waited = limiter.acquire()
+            self.assertEqual(waited, 8.0)
+            self.assertEqual(clock.sleeps, [8.0])
+            self.assertEqual(clock.now, 8.0)
 
 
 if __name__ == "__main__":

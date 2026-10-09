@@ -3,18 +3,77 @@ HTTP-адаптер публичного GeckoTerminal API V2.
 
 Адаптер только получает и разбирает new pools. Он не пишет pairs,
 не считает score и не открывает позиции.
+
+Все HTTP-вызовы одного процесса идут через один limiter: не чаще
+одного запроса примерно каждые GECKO_MIN_REQUEST_INTERVAL_SECONDS.
+Первый запрос не ждёт. Ответ 429 не повторяется.
 """
 
 import re
+import threading
+import time
 
 import requests
 
 
 GECKO_TERMINAL_BASE_URL = "https://api.geckoterminal.com/api/v2"
+GECKO_MIN_REQUEST_INTERVAL_SECONDS = 8.0
 DEFAULT_INCLUDE = "base_token,quote_token,dex"
 DEFAULT_TIMEOUT = 20
-USER_AGENT = "crypto-radar-discovery/0.10"
+USER_AGENT = "crypto-radar-discovery/0.10.1"
 _NETWORK_RE = re.compile(r"[a-z0-9_]{1,64}")
+
+
+class GeckoRequestLimiter:
+    """Пауза между стартами соседних HTTP-запросов GeckoTerminal.
+
+    clock и sleeper подменяются в тестах. По умолчанию это
+    time.monotonic и time.sleep. Limiter не читает ответ и не
+    повторяет запрос.
+    """
+
+    def __init__(self, interval_seconds=None, clock=None, sleeper=None):
+        if interval_seconds is None:
+            interval_seconds = GECKO_MIN_REQUEST_INTERVAL_SECONDS
+        self.interval_seconds = float(interval_seconds)
+        self.clock = time.monotonic if clock is None else clock
+        self.sleeper = time.sleep if sleeper is None else sleeper
+        self.request_count = 0
+        self._last_request_at = None
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        with self._lock:
+            now = self.clock()
+            self.request_count += 1
+            if self._last_request_at is None:
+                self._last_request_at = now
+                return 0.0
+            remaining = self.interval_seconds - (now - self._last_request_at)
+            if remaining > 0:
+                self.sleeper(remaining)
+                now = self.clock()
+                scheduled = self._last_request_at + self.interval_seconds
+                if now < scheduled:
+                    now = scheduled
+            self._last_request_at = now
+            if remaining > 0:
+                return remaining
+            return 0.0
+
+
+_REQUEST_LIMITER = GeckoRequestLimiter()
+
+
+def get_request_limiter():
+    return _REQUEST_LIMITER
+
+
+def set_request_limiter(limiter):
+    global _REQUEST_LIMITER
+    previous = _REQUEST_LIMITER
+    _REQUEST_LIMITER = limiter
+    return previous
 
 
 def fetch_new_pools(
@@ -171,6 +230,7 @@ def _get_collection(path, params, timeout, getter):
 
 
 def _request(url, params, timeout, getter):
+    get_request_limiter().acquire()
     if getter is not None:
         return getter(url, params=params, timeout=timeout)
     return requests.get(
