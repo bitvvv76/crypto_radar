@@ -1,0 +1,165 @@
+{
+  "data": [
+    {
+      "id": "solana_2p3iBMUKTmuvsAcvXCQTv7AZAs397MkDs9TtW1ZUcr7W",
+      "type": "pool",
+      "attributes": {
+        "base_token_price_usd": "0.0000049459293487700670761809606890365212921764789992913146969584467",
+        "base_token_price_native_currency": "0.000000045096916317874",
+        "quote_token_price_usd": "109.67333805947536006963113591867330566136188667",
+        "quote_token_price_native_currency": "1.0",
+        "base_token_price_quote_token": "0.00000004509691632",
+        "quote_token_price_base_token": "22174465.166339",
+        "address": "2p3iBMUKTmuvsAcvXCQTv7AZAs397MkDs9TtW1ZUcr7W",
+        "name": "QUANTED / SOL",
+        "pool_created_at": "2026-10-09T15:39:13Z",
+        "fdv_usd": "4945.929349",
+        "market_cap_usd": null,
+        "price_change_percentage": {
+          "m5": "0",
+          "m15": "0",
+          "m30": "0",
+          "h1": "0",
+          "h6": "0",
+          "h24": "0"
+        },
+        "volume_usd": {
+          "m5": "1.2031802387",
+          "m15": "1.2031802387",
+          "m30": "1.2031802387",
+          "h1": "1.2031802387",
+          "h6": "1.2031802387",
+          "h24": "1.2031802387"
+        },
+        "reserve_in_usd": "3682.71463446987"
+      },
+      "relationships": {
+        "base_token": {
+          "data": {
+            "id": "solana_7wCCq9WhuaKus27sKvquwd3ZiKgy8JjZDnKSa9m2pump",
+            "type": "token"
+          }
+        },
+        "quote_token": {
+          "data": {
+            "id": "solana_So11111111111111111111111111111111111111112",
+            "type": "token"
+          }
+        },
+        "dex": {
+          "data": {
+            "id": "pump-fun",
+            "type": "dex"
+          }
+        }
+      }
+    },
+    {
+      "id": "solana_2sMgNrBVgni1x7kEJ98QuqWXDBhmZ1tz7C39mCodpqy8",
+      "type": "pool",
+      "attributes": {
+        "base_token_price_usd": "0.000000924269058411389920415923618658611414172073636466718212103663526",
+        "base_token_price_native_currency": "0.00000000843421847829443",
+        "quote_token_price_usd": "0.999699544419467730189791951092062451519704138016196704073060934",
+        "quote_token_price_native_currency": "0.00912254315294008",
+        "base_token_price_quote_token": "0.0000009245468437",
+        "quote_token_price_base_token": "1081610.96092271",
+        "address": "2sMgNrBVgni1x7kEJ98QuqWXDBhmZ1tz7C39mCodpqy8",
+        "name": "DOOBIE / USDC",
+        "pool_created_at": "2026-10-09T15:38:51Z",
+        "fdv_usd": "8008.017954",
+        "market_cap_usd": null,
+        "price_change_percentage": {
+          "m5": "0",
+          "m15": "0",
+          "m30": "0",
+          "h1": "0",
+          "h6": "0",
+          "h24": "0"
+        },
+        "volume_usd": {
+          "m5": "8.9894794027",
+          "m15": "8.9894794027",
+          "m30": "8.9894794027",
+          "h1": "8.9894794027",
+          "h6": "8.9894794027",
+          "h24": "8.9894794027"
+        },
+        "reserve_in_usd": "2451.4084"
+      },
+      "relationships": {
+        "base_token": {
+          "data": {
+            "id": "solana_9udd47zzccdC5Pr97fHGZtvge7KuUW9frCFKSbkPpump",
+            "type": "token"
+          }
+        },
+        "quote_token": {
+          "data": {
+            "id": "solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "type": "token"
+          }
+        },
+        "dex": {
+          "data": {
+            "id": "pump-fun",
+            "type": "dex"
+          }
+        }
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "solana_7wCCq9WhuaKus27sKvquwd3ZiKgy8JjZDnKSa9m2pump",
+      "type": "token",
+      "attributes": {
+        "address": "7wCCq9WhuaKus27sKvquwd3ZiKgy8JjZDnKSa9m2pump",
+        "name": "Quanted",
+        "symbol": "QUANTED",
+        "decimals": 6,
+        "coingecko_coin_id": null
+      }
+    },
+    {
+      "id": "solana_So11111111111111111111111111111111111111112",
+      "type": "token",
+      "attributes": {
+        "address": "So11111111111111111111111111111111111111112",
+        "name": "Wrapped SOL",
+        "symbol": "SOL",
+        "decimals": 9,
+        "coingecko_coin_id": "wrapped-solana"
+      }
+    },
+    {
+      "id": "pump-fun",
+      "type": "dex",
+      "attributes": {
+        "name": "Pump.fun"
+      }
+    },
+    {
+      "id": "solana_9udd47zzccdC5Pr97fHGZtvge7KuUW9frCFKSbkPpump",
+      "type": "token",
+      "attributes": {
+        "address": "9udd47zzccdC5Pr97fHGZtvge7KuUW9frCFKSbkPpump",
+        "name": "DOOBIE",
+        "symbol": "DOOBIE",
+        "decimals": 6,
+        "coingecko_coin_id": null
+      }
+    },
+    {
+      "id": "solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "type": "token",
+      "attributes": {
+        "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "name": "USD Coin",
+        "symbol": "USDC",
+        "decimals": 6,
+        "coingecko_coin_id": "usd-coin"
+      }
+    }
+  ]
+}

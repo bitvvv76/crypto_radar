@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Crypto Radar new pairs discovery every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=crypto-radar-discovery.service
+
+[Install]
+WantedBy=timers.target
