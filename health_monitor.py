@@ -105,21 +105,13 @@ def _job_state(run, now, stale_after):
     if moment is None:
         return {"state": STATE_STALE, "detail": "время последнего запуска не читается"}
     age = now - moment
+    stamp = run.get("finished_at") or run.get("started_at")
+    detail = "последний запуск {0}, статус {1}".format(stamp, run.get("status"))
     if age > stale_after:
-        return {
-            "state": STATE_STALE,
-            "detail": "последний запуск {0}, статус {1}".format(
-                run.get("finished_at") or run.get("started_at"),
-                run.get("status"),
-            ),
-        }
-    return {
-        "state": STATE_OK,
-        "detail": "последний запуск {0}, статус {1}".format(
-            run.get("finished_at") or run.get("started_at"),
-            run.get("status"),
-        ),
-    }
+        return {"state": STATE_STALE, "detail": detail}
+    if run.get("status") == "error":
+        return {"state": STATE_ERROR, "detail": detail}
+    return {"state": STATE_OK, "detail": detail}
 
 
 def _api_state(db_path):
@@ -203,6 +195,10 @@ def _problem_title(key, state):
         return "Проверки цены не выполнялись"
     if key == ALERT_PRICE_CHECK and state == STATE_STALE:
         return "Проверки цены не выполняются"
+    if key == ALERT_SCANNER and state == STATE_ERROR:
+        return "Плановое сканирование завершилось ошибкой"
+    if key == ALERT_PRICE_CHECK and state == STATE_ERROR:
+        return "Проверки цены завершились ошибкой"
     if key == ALERT_API:
         return "Ошибка API"
     if key == ALERT_DAILY_REPORT:

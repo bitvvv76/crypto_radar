@@ -24,7 +24,7 @@ from daily_report import (
     send_due_daily_report,
 )
 from database import create_tables, ensure_paper_tables, get_paper_position, open_baseline_position
-from health_monitor import evaluate_health
+from health_monitor import evaluate_health, render_health_alert
 from human_approval import activate_approval_account, run_approval_maintenance
 from monitor_store import (
     JOB_AUTO_CHECK,
@@ -712,6 +712,86 @@ class SignalMonitoringTest(unittest.TestCase):
         self.assertEqual(again["changes"], [])
         self.assertEqual([item["alert_key"] for item in fresh["changes"]], ["price_check"])
         self.assertEqual(fresh["changes"][0]["state"], "ok")
+
+    def test_fresh_error_run_is_not_reported_as_healthy(self):
+        record_job_run(
+            self.db_path,
+            JOB_SCANNER,
+            "2026-10-09 07:40:00",
+            "error",
+            summary={"api_errors": []},
+            finished_at="2026-10-09 07:45:00",
+        )
+        record_job_run(
+            self.db_path,
+            JOB_AUTO_CHECK,
+            "2026-10-09 07:50:00",
+            "error",
+            summary={"api_errors": []},
+            finished_at="2026-10-09 07:55:00",
+        )
+
+        failed = evaluate_health(self.db_path, NOW)
+        text = render_health_alert(failed["changes"], NOW)
+        save_health_states(self.db_path, failed["states"], "2026-10-09 08:00:00")
+        again = evaluate_health(self.db_path, NOW)
+        record_job_run(
+            self.db_path,
+            JOB_SCANNER,
+            "2026-10-09 07:56:00",
+            "ok",
+            summary={"api_errors": []},
+            finished_at="2026-10-09 07:56:00",
+        )
+        record_job_run(
+            self.db_path,
+            JOB_AUTO_CHECK,
+            "2026-10-09 07:57:00",
+            "ok",
+            summary={"api_errors": []},
+            finished_at="2026-10-09 07:57:00",
+        )
+        recovered = evaluate_health(self.db_path, NOW)
+
+        self.assertEqual(
+            [(item["alert_key"], item["state"]) for item in failed["changes"]],
+            [("scanner", "error"), ("price_check", "error")],
+        )
+        self.assertIn("Плановое сканирование завершилось ошибкой", text)
+        self.assertIn("Проверки цены завершились ошибкой", text)
+        self.assertNotIn("снова выполняется", text)
+        self.assertEqual(again["changes"], [])
+        self.assertEqual(
+            [(item["alert_key"], item["state"]) for item in recovered["changes"]],
+            [("scanner", "ok"), ("price_check", "ok")],
+        )
+
+    def test_auto_check_callback_returns_run_cycle_result(self):
+        import auto_check_all
+
+        stats = {
+            "opened": 2,
+            "sql_candidates": 2,
+            "new_24h_events": 2,
+            "rejections": [],
+            "entry_errors": [],
+        }
+        seen = {}
+
+        def spy(cycle_now, run_cycle_call, db_path=None):
+            seen["result"] = run_cycle_call()
+
+        with patch("auto_check_all.get_pairs_for_next_checks", return_value=[]), \
+             patch("paper_portfolio.run_engine_with_portfolio", side_effect=spy), \
+             patch("paper_engine.run_cycle", return_value=stats), \
+             patch("human_approval.run_approval_maintenance", return_value={"requests_created": 0}):
+            auto_check_all.main()
+
+        stored = latest_job_run(self.db_path, JOB_AUTO_CHECK)
+        diagnostics = stored["summary"]["diagnostics"]
+        self.assertIs(seen["result"], stats)
+        self.assertEqual(diagnostics["baseline_opened"], 2)
+        self.assertEqual(diagnostics["sql_candidates"], 2)
 
     def test_failed_health_delivery_is_retried(self):
         client = FakeTelegram()

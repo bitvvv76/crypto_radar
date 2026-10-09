@@ -172,11 +172,12 @@ def main():
                     now=cycle_now,
                     new_24h_pair_ids=new_24h_pair_ids,
                 )
+                return paper_stats
 
             def _guarded_paper():
                 nonlocal paper_error
                 try:
-                    _run_paper()
+                    return _run_paper()
                 except Exception as error:
                     paper_error = error
                     raise
