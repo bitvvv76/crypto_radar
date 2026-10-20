@@ -1,10 +1,11 @@
 [Unit]
-Description=Crypto Radar new pairs discovery
+Description=Crypto Radar CoinGecko authenticated new pairs discovery
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/crypto_radar
+EnvironmentFile=/opt/crypto_radar/.env
 ExecStart=/opt/crypto_radar/venv/bin/python /opt/crypto_radar/new_pairs_discovery.py
 User=root

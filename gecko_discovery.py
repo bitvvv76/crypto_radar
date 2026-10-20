@@ -1,6 +1,13 @@
 """
 HTTP-адаптер публичного GeckoTerminal API V2.
 
+DEPRECATED / NOT A PRODUCTION SOURCE.
+
+v0.10.2 не использует этот модуль в production discovery: публичный
+GeckoTerminal стабильно отвечал HTTP 429. Рабочий источник —
+authenticated CoinGecko Demo Onchain API (coingecko_discovery.py).
+Модуль оставлен для истории и тестов v0.10.
+
 Адаптер только получает и разбирает new pools. Он не пишет pairs,
 не считает score и не открывает позиции.
 """

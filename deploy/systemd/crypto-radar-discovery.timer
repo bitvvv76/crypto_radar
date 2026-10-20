@@ -1,9 +1,9 @@
 [Unit]
-Description=Run Crypto Radar new pairs discovery every 10 minutes
+Description=Run Crypto Radar new pairs discovery every 20 minutes
 
 [Timer]
 OnBootSec=3min
-OnUnitActiveSec=10min
+OnUnitActiveSec=20min
 Persistent=true
 Unit=crypto-radar-discovery.service
 

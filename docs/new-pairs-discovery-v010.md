@@ -1,5 +1,10 @@
 # Crypto Radar v0.10 — новые DEX pools
 
+> Публичный GeckoTerminal adapter с v0.10.2 **не является production-источником**.
+> Рабочий discovery — authenticated CoinGecko Demo Onchain API.
+> См. `docs/coingecko-auth-discovery-v0102.md`.
+> Этот документ описывает исторический контур v0.10 и его тестовый runner.
+
 Ветка разработки: `cursor/new-pairs-discovery-v010`.
 
 База кода — production v0.9.2, commit `dfe0d29` (`feature/signal-monitoring-v092`). На `main` этого коммита ещё нет: `main` остаётся на `d9dedfb`, а v0.9.2 — его прямой потомок.
