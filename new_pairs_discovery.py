@@ -1,6 +1,10 @@
 """
-Поиск новых DEX pools через GeckoTerminal и передача их
-в существующий pipeline Crypto Radar.
+Поиск новых DEX pools и передача их в существующий pipeline Crypto Radar.
+
+Production-источник v0.10.2 — CoinGecko Demo Onchain API,
+coingecko_authenticated_new_pools. Публичный GeckoTerminal из CLI
+не вызывается. _run_legacy_discovery оставлен только для контракта
+тестов v0.10.
 
 После save_pair идея идёт обычным путём: watchlist, проверки цены,
 paper engine. Отдельного paper-контура здесь нет.
@@ -16,6 +20,13 @@ from pathlib import Path
 
 import database
 from auto_scan import ALLOWED_QUOTE_TOKENS, MAX_NEW_IDEAS, MIN_FINAL_SCORE
+from coingecko_discovery import (
+    demo_api_key,
+    fetch_network_new_pools,
+    monthly_budget_limit,
+    new_pools_path,
+    parse_new_pool as parse_coingecko_pool,
+)
 from config import MIN_LIQUIDITY_USD
 from database import (
     add_to_watchlist,
@@ -26,10 +37,26 @@ from database import (
     pair_exists,
     save_pair,
 )
-from discovery_store import SOURCE_GECKO, upsert_candidate
-from gecko_discovery import fetch_new_pools, parse_new_pool
+from discovery_store import (
+    API_PROVIDER_COINGECKO,
+    SOURCE_COINGECKO,
+    SOURCE_GECKO,
+    attach_usage_job_run,
+    ensure_discovery_runtime_tables,
+    get_network_state,
+    monthly_billable_count,
+    record_api_usage,
+    save_complete_reference,
+    save_initial_target_cutoff,
+    upsert_candidate,
+)
 from monitor_store import record_job_run, utc_now_text
-from network_map import discovery_networks, mapping_for_network
+from network_map import (
+    coingecko_discovery_interval,
+    coingecko_discovery_network_ids,
+    discovery_networks,
+    mapping_for_network,
+)
 from scanner import filter_valid_pairs, get_pair_by_address
 from scoring import (
     calculate_final_score,
@@ -61,16 +88,51 @@ def main(argv=None):
     try:
         summary = run_discovery(dry_run=dry_run)
     except Exception as error:
-        _record_failed_run(error)
-        print("CRYPTO RADAR — NEW PAIRS DISCOVERY")
+        if not dry_run:
+            _record_failed_run(error)
+        print("CRYPTO RADAR — COINGECKO AUTH DISCOVERY")
         print("Запуск завершился с ошибкой.")
         return 1
 
-    print(format_report(summary))
+    if summary.get("source") == SOURCE_COINGECKO:
+        report = format_auth_report(summary)
+    else:
+        report = format_report(summary)
+    print(_redact_secret(report))
+    if summary.get("missing_api_key"):
+        return 1
     return 0
 
 
 def run_discovery(
+    dry_run=False,
+    networks=None,
+    pages=MAX_PAGES_PER_NETWORK,
+    fetch_pools=None,
+    enrich_pair=None,
+    now=None,
+):
+    # Явный fetch_pools оставляет прежний GeckoTerminal runner: так
+    # зафиксирован контракт тестов v0.10. CLI его не передаёт.
+    if fetch_pools is not None:
+        return _run_legacy_discovery(
+            dry_run=dry_run,
+            networks=networks,
+            pages=pages,
+            fetch_pools=fetch_pools,
+            enrich_pair=enrich_pair,
+            now=now,
+        )
+    return run_authenticated_discovery(
+        dry_run=dry_run,
+        networks=networks,
+        pages=pages,
+        enrich_pair=enrich_pair,
+        now=now,
+    )
+
+
+def _run_legacy_discovery(
     dry_run=False,
     networks=None,
     pages=MAX_PAGES_PER_NETWORK,
@@ -112,7 +174,7 @@ def run_discovery(
     seen_keys = set()
     for source_network, pool, included in received:
         try:
-            parsed = parse_new_pool(
+            parsed = _legacy_parse_new_pool(
                 pool,
                 included,
                 source_network=source_network,
@@ -532,7 +594,7 @@ def _save_idea(item):
 
 def _candidate_fields(item):
     return {
-        "source": SOURCE_GECKO,
+        "source": item.get("source") or SOURCE_GECKO,
         "source_network": item["source_network"],
         "pool_address": item["pool_key"][1],
         "chain_id": item.get("chain_id"),
@@ -807,8 +869,21 @@ def _score_counts(decided):
     return counts
 
 
+def _legacy_parse_new_pool(pool, included=None, source_network=None):
+    from gecko_discovery import parse_new_pool
+    return parse_new_pool(pool, included, source_network=source_network)
+
+
 def _default_fetch(network, page):
-    return fetch_new_pools(network, page=page)
+    # Публичный GeckoTerminal из этого модуля больше не вызывается.
+    return {
+        "ok": False,
+        "pools": [],
+        "included": [],
+        "error_kind": "deprecated_source",
+        "status_code": None,
+        "billable": False,
+    }
 
 
 def _page_cap(pages):
@@ -976,11 +1051,519 @@ def _record_failed_run(error):
             JOB_NEW_PAIRS_DISCOVERY,
             utc_now_text(),
             "error",
-            summary={"source": SOURCE_GECKO, "errors": 1},
+            summary={"source": SOURCE_COINGECKO, "errors": 1},
             error_text=type(error).__name__,
         )
     except Exception:
         print("DISCOVERY: журнал запуска не записан")
+
+
+def run_authenticated_discovery(
+    dry_run=False,
+    networks=None,
+    pages=MAX_PAGES_PER_NETWORK,
+    fetch_pools=None,
+    enrich_pair=None,
+    now=None,
+    budget_limit=None,
+):
+    summary = empty_auth_summary(dry_run=dry_run)
+    started_at = utc_now_text(now)
+    moment = _parse_time(started_at)
+    limit = monthly_budget_limit(budget_limit)
+    summary["monthly_budget_limit"] = limit
+    chosen = _auth_networks(networks)
+    due, skipped = _split_due_networks(chosen, moment)
+    summary["due_networks"] = due
+    summary["skipped_not_due_networks"] = skipped
+    summary["monthly_budget_used"] = monthly_billable_count(now)
+    summary["monthly_budget_remaining"] = max(0, limit - summary["monthly_budget_used"])
+
+    if fetch_pools is None and demo_api_key() is None:
+        summary["missing_api_key"] = True
+        summary["coverage_complete"] = False
+        summary["networks_complete"] = 0
+        summary["networks_incomplete"] = len(due)
+        for network in due:
+            summary["pagination"][network] = _open_coverage("missing_api_key")
+        if not dry_run:
+            _record_auth_run(started_at, "error", summary)
+        return summary
+
+    if not dry_run:
+        create_tables()
+        ensure_discovery_runtime_tables()
+
+    page_cap = _page_cap(pages)
+    summary["max_pages"] = page_cap
+    cutoffs = {
+        network: _auth_cutoff(network, moment, dry_run, now)
+        for network in due
+    }
+    if fetch_pools is None:
+        fetch_pools = _default_auth_fetch
+    if enrich_pair is None:
+        enrich_pair = get_pair_by_address
+
+    received, api_error_details, pagination, stats = _collect_fair(
+        due,
+        page_cap,
+        fetch_pools,
+        cutoffs,
+        now,
+        dry_run,
+        limit,
+    )
+    summary["api_pools_received"] = len(received)
+    summary["pools_received"] = len(received)
+    summary["api_errors"] = stats["api_errors"]
+    summary["api_error_kinds"] = api_error_details
+    summary["api_requests"] = stats["api_requests"]
+    summary["api_200"] = stats["api_200"]
+    summary["rate_limited"] = stats["halt"] == "rate_limited"
+    summary["pagination"] = pagination
+    summary["unrecorded_billable"] = stats["local_billable"] if dry_run else 0
+    used = stats["baseline"] if dry_run else stats["baseline"] + stats["local_billable"]
+    summary["monthly_budget_used"] = used
+    summary["monthly_budget_remaining"] = max(0, limit - used)
+    _apply_auth_coverage(summary, due)
+
+    prepared = []
+    seen_keys = set()
+    for source_network, pool, included in received:
+        try:
+            parsed = parse_coingecko_pool(
+                pool,
+                included,
+                source_network=source_network,
+            )
+        except Exception:
+            summary["errors"] += 1
+            continue
+        if not parsed.get("ok"):
+            summary["errors"] += 1
+            continue
+        pool_key = _dedup_key(parsed)
+        if pool_key is not None:
+            if pool_key in seen_keys:
+                summary["duplicates"] += 1
+                continue
+            seen_keys.add(pool_key)
+        prepared.append((parsed, pool_key))
+
+    summary["unique_pools"] = len(prepared)
+    decided = []
+    for parsed, pool_key in prepared:
+        try:
+            decision = _decide_pool(parsed, pool_key, enrich_pair, summary)
+        except Exception:
+            summary["errors"] += 1
+            continue
+        if decision is None:
+            continue
+        decision["source"] = SOURCE_COINGECKO
+        decided.append(decision)
+
+    _apply_save_cap(decided)
+    if not dry_run:
+        _persist(decided, now, summary)
+        for network in due:
+            info = pagination.get(network) or {}
+            if info.get("coverage_complete") is True:
+                save_complete_reference(network, started_at, now=now)
+    else:
+        for item in decided:
+            if item["will_save"]:
+                item["status"] = "dry_run"
+                item["reason"] = "dry_run"
+
+    summary["saved_new_ideas"] = _count_saved(decided, dry_run)
+    summary["dex_confirmed"] = summary["dex_enriched"]
+    summary["pools_received"] = summary["api_pools_received"]
+    summary["preview"] = [_preview(item) for item in decided if item["score_ready"]]
+    summary["score_counts"] = _score_counts(decided)
+
+    if not dry_run:
+        status = "ok" if summary["coverage_complete"] else "partial"
+        run_id = _record_auth_run(started_at, status, summary)
+        attach_usage_job_run(stats["usage_ids"], run_id)
+    return summary
+
+
+def empty_auth_summary(dry_run=False):
+    summary = empty_summary(dry_run=dry_run)
+    summary["source"] = SOURCE_COINGECKO
+    summary["due_networks"] = []
+    summary["skipped_not_due_networks"] = []
+    summary["api_requests"] = 0
+    summary["api_200"] = 0
+    summary["pools_received"] = 0
+    summary["dex_confirmed"] = 0
+    summary["monthly_budget_used"] = 0
+    summary["monthly_budget_remaining"] = 0
+    summary["monthly_budget_limit"] = monthly_budget_limit()
+    summary["missing_api_key"] = False
+    summary["unrecorded_billable"] = 0
+    return summary
+
+
+def format_auth_report(summary):
+    lines = [
+        "CRYPTO RADAR — COINGECKO AUTH DISCOVERY",
+        "=======================================",
+        "",
+    ]
+    if summary.get("dry_run"):
+        lines.append("Режим: dry-run. База не изменяется.")
+        lines.append("")
+    if summary.get("missing_api_key"):
+        lines.append("COINGECKO_DEMO_API_KEY is not set.")
+        lines.append("Discovery did not call CoinGecko.")
+        lines.append("")
+
+    lines.append("Source:")
+    lines.append(summary.get("source") or SOURCE_COINGECKO)
+    lines.append("")
+    lines.append("Due networks:")
+    due = summary.get("due_networks") or []
+    if due:
+        for network in due:
+            lines.append(network.upper())
+    else:
+        lines.append("none")
+    lines.append("")
+    lines.append("Skipped not due:")
+    skipped = summary.get("skipped_not_due_networks") or []
+    if skipped:
+        for network in skipped:
+            lines.append(network.upper())
+    else:
+        lines.append("none")
+    lines.append("")
+    lines.append("API:")
+    lines.append("Requests: {0}".format(summary.get("api_requests", 0)))
+    lines.append("HTTP 200: {0}".format(summary.get("api_200", 0)))
+    lines.append("Errors: {0}".format(summary.get("api_errors", 0)))
+    lines.append("")
+    limit = summary.get("monthly_budget_limit", 0)
+    used = summary.get("monthly_budget_used", 0)
+    remaining = summary.get("monthly_budget_remaining", 0)
+    lines.append("Monthly budget:")
+    lines.append("Used: {0} / {1}".format(used, limit))
+    lines.append("Remaining: {0}".format(remaining))
+    if summary.get("dry_run"):
+        lines.append("API usage was not recorded.")
+    lines.append("")
+    lines.append("Pools received: {0}".format(summary.get("pools_received", 0)))
+    lines.append("Unique: {0}".format(summary.get("unique_pools", 0)))
+    lines.append("Verified quote: {0}".format(summary.get("supported_quote", 0)))
+    lines.append("Unsupported quote: {0}".format(summary.get("unsupported_quote", 0)))
+    lines.append("Unverified quote: {0}".format(summary.get("unverified_quote", 0)))
+    lines.append("DexScreener confirmed: {0}".format(summary.get("dex_confirmed", 0)))
+    lines.append("DexScreener not found: {0}".format(summary.get("dex_not_found", 0)))
+    lines.append("Invalid price: {0}".format(summary.get("invalid_price", 0)))
+    lines.append("Invalid liquidity: {0}".format(summary.get("invalid_liquidity", 0)))
+    lines.append("Below score: {0}".format(summary.get("below_score", 0)))
+    lines.append("Eligible: {0}".format(summary.get("eligible_score", 0)))
+    lines.append("Existing: {0}".format(summary.get("existing_pairs", 0)))
+    lines.append("Saved: {0}".format(summary.get("saved_new_ideas", 0)))
+    lines.append("")
+    lines.append("NETWORK COVERAGE")
+    pagination = summary.get("pagination") or {}
+    if not pagination:
+        lines.append("none")
+    for network, info in pagination.items():
+        lines.append("")
+        lines.append("{0}:".format(network.upper()))
+        lines.append("pages: {0}".format(info.get("pages_fetched", 0)))
+        lines.append("cutoff: {0}".format(info.get("cutoff") or "-"))
+        lines.append("oldest: {0}".format(info.get("oldest_pool_created_at") or "-"))
+        lines.append("stop: {0}".format(info.get("stop_reason") or "-"))
+        lines.append("complete: {0}".format(
+            "yes" if info.get("coverage_complete") else "no",
+        ))
+    return "\n".join(lines)
+
+
+def _auth_networks(requested):
+    allowed = coingecko_discovery_network_ids()
+    if requested is None:
+        return list(allowed)
+    selected = set(requested)
+    return [network for network in allowed if network in selected]
+
+
+def _split_due_networks(networks, moment):
+    due = []
+    skipped = []
+    for network in networks:
+        if _auth_network_due(network, moment):
+            due.append(network)
+        else:
+            skipped.append(network)
+    return due, skipped
+
+
+def _auth_network_due(network, moment):
+    interval = coingecko_discovery_interval(network)
+    if interval is None or moment is None:
+        return False
+    state = get_network_state(network)
+    if state is None or not state.get("last_complete_reference"):
+        return True
+    reference = _parse_time(state.get("last_complete_reference"))
+    if reference is None:
+        return True
+    return moment - reference >= interval
+
+
+def _auth_cutoff(network, moment, dry_run, now):
+    state = get_network_state(network)
+    if state is not None and state.get("last_complete_reference"):
+        reference = _parse_time(state.get("last_complete_reference"))
+        if reference is not None:
+            return reference - DISCOVERY_OVERLAP, "overlap"
+    if state is not None and state.get("initial_target_cutoff"):
+        stored = _parse_time(state.get("initial_target_cutoff"))
+        if stored is not None:
+            return stored, "initial_target_cutoff"
+    cutoff = moment - INITIAL_LOOKBACK
+    if not dry_run:
+        save_initial_target_cutoff(network, _format_cutoff(cutoff), now=now)
+    return cutoff, "initial_target_cutoff"
+
+
+def _collect_fair(due, pages, fetch_pools, cutoffs, now, dry_run, budget_limit):
+    baseline = monthly_billable_count(now)
+    local = 0
+    usage_ids = []
+    requested_at = utc_now_text(now)
+    errors = []
+    states = {}
+    for network in due:
+        states[network] = {
+            "active": True,
+            "pages_fetched": 0,
+            "oldest": None,
+            "stop_reason": None,
+            "received": [],
+        }
+    halt = None
+    api_requests = 0
+    api_200 = 0
+    api_errors = 0
+
+    for page in range(1, pages + 1):
+        for network in due:
+            state = states[network]
+            if not state["active"]:
+                continue
+            if halt is not None:
+                state["active"] = False
+                state["stop_reason"] = halt
+                continue
+            if baseline + local >= budget_limit:
+                halt = "monthly_budget_exhausted"
+                state["active"] = False
+                state["stop_reason"] = halt
+                continue
+
+            try:
+                result = fetch_pools(network, page)
+            except Exception:
+                result = None
+            if not isinstance(result, dict):
+                result = {
+                    "ok": False,
+                    "error_kind": "malformed_page",
+                    "pools": [],
+                    "included": [],
+                    "billable": False,
+                    "status_code": None,
+                }
+
+            api_requests += 1
+            billable = _result_billable(result)
+            if billable:
+                local += 1
+                api_200 += 1
+            endpoint = result.get("endpoint") or new_pools_path(network)
+            if not endpoint:
+                endpoint = "/onchain/networks/{0}/new_pools".format(network)
+            if not dry_run:
+                usage_ids.append(record_api_usage(
+                    API_PROVIDER_COINGECKO,
+                    network,
+                    endpoint,
+                    requested_at,
+                    result.get("status_code"),
+                    billable,
+                ))
+
+            if not result.get("ok"):
+                api_errors += 1
+                kind = result.get("error_kind") or "http_error"
+                errors.append(_auth_api_error(network, page, kind))
+                state["active"] = False
+                state["stop_reason"] = kind
+                if kind in {"rate_limited", "auth_error", "missing_api_key"}:
+                    halt = kind
+                continue
+
+            pools = result.get("pools")
+            included = result.get("included")
+            if not isinstance(pools, list) or (
+                included is not None and not isinstance(included, list)
+            ):
+                api_errors += 1
+                errors.append(_auth_api_error(network, page, "malformed_page"))
+                state["active"] = False
+                state["stop_reason"] = "malformed_page"
+                continue
+            if included is None:
+                included = []
+
+            state["pages_fetched"] += 1
+            if not pools:
+                state["active"] = False
+                state["stop_reason"] = "empty_page"
+                continue
+            for pool in pools:
+                state["received"].append((network, pool, included))
+            page_oldest = _oldest_pool_created_at(pools)
+            if page_oldest is not None and (
+                state["oldest"] is None or page_oldest < state["oldest"]
+            ):
+                state["oldest"] = page_oldest
+            cutoff, _basis = cutoffs[network]
+            if page_oldest is not None and page_oldest <= cutoff:
+                state["active"] = False
+                state["stop_reason"] = "cutoff"
+                continue
+            if page_oldest is None and page == pages:
+                state["active"] = False
+                state["stop_reason"] = "missing_timestamps"
+                continue
+            if page == pages:
+                state["active"] = False
+                state["stop_reason"] = "max_pages"
+
+    received = []
+    pagination = {}
+    for network in due:
+        state = states[network]
+        if state["stop_reason"] is None:
+            state["stop_reason"] = "max_pages"
+        cutoff, basis = cutoffs[network]
+        received.extend(state["received"])
+        pagination[network] = _coverage_record(
+            cutoff,
+            basis,
+            state["pages_fetched"],
+            state["stop_reason"],
+            state["oldest"],
+        )
+    return received, errors, pagination, {
+        "api_requests": api_requests,
+        "api_200": api_200,
+        "api_errors": api_errors,
+        "local_billable": local,
+        "baseline": baseline,
+        "usage_ids": usage_ids,
+        "halt": halt,
+    }
+
+
+def _result_billable(result):
+    if not isinstance(result, dict):
+        return False
+    if "billable" in result:
+        return bool(result["billable"])
+    status = result.get("status_code")
+    if status == 200:
+        return True
+    return bool(result.get("ok")) and status in (None, 200)
+
+
+def _auth_api_error(network, page, kind):
+    return {
+        "source": SOURCE_COINGECKO,
+        "network": network,
+        "page": page,
+        "kind": kind,
+    }
+
+
+def _open_coverage(stop_reason):
+    return {
+        "pages_fetched": 0,
+        "oldest_pool_created_at": None,
+        "cutoff": None,
+        "cutoff_basis": None,
+        "stop_reason": stop_reason,
+        "coverage_complete": False,
+    }
+
+
+def _apply_auth_coverage(summary, due):
+    pagination = summary.get("pagination") or {}
+    complete = 0
+    for network in due:
+        info = pagination.get(network) or {}
+        if info.get("coverage_complete") is True:
+            complete += 1
+    summary["networks_complete"] = complete
+    summary["networks_incomplete"] = len(due) - complete
+    summary["coverage_complete"] = summary["networks_incomplete"] == 0
+
+
+def _default_auth_fetch(network, page):
+    return fetch_network_new_pools(network, page=page)
+
+
+def _record_auth_run(started_at, status, summary):
+    hidden = {"preview", "unrecorded_billable"}
+    public_summary = _scrub_value({
+        key: value
+        for key, value in summary.items()
+        if key not in hidden
+    })
+    try:
+        return record_job_run(
+            None,
+            JOB_NEW_PAIRS_DISCOVERY,
+            started_at,
+            status,
+            summary=public_summary,
+            error_text=None,
+        )
+    except Exception:
+        print("DISCOVERY: журнал запуска не записан")
+        return None
+
+
+def _redact_secret(text):
+    return _scrub_value(text)
+
+
+def _scrub_value(value):
+    secret = demo_api_key()
+    if not secret or len(secret) < 8:
+        return value
+    return _replace_secret(value, secret)
+
+
+def _replace_secret(value, secret):
+    if isinstance(value, str):
+        return value.replace(secret, "[redacted]")
+    if isinstance(value, dict):
+        return {
+            key: _replace_secret(item, secret)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_secret(item, secret) for item in value]
+    return value
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """
-Единый mapping GeckoTerminal network id → DexScreener chainId.
+Единый mapping network id → DexScreener chainId.
 
 Имена сетей не считаются одинаковыми, пока один и тот же pool address
 не найден в обоих API. Проверка 2026-10-09:
@@ -11,7 +11,14 @@
 - arc → arc, pool COLDROOK/USDC
 
 Сети вне этого списка получают статус unsupported_network.
+
+CoinGecko authenticated discovery v0.10.2 берёт сети только из
+COINGECKO_DISCOVERY_NETWORKS. Solana в этом списке нет: её new-pools
+поток слишком частый для Demo budget. Solana остаётся в MAPPINGS,
+legacy scanner, price checks, Paper Engine и Human Approval.
 """
+
+from datetime import timedelta
 
 
 MAPPINGS = (
@@ -46,3 +53,30 @@ def chain_is_evm(chain_id):
 
 def discovery_networks():
     return [item["gecko_network"] for item in MAPPINGS]
+
+
+# Единственный список сетей authenticated discovery. Интервал — минуты
+# с последнего complete coverage. Arbitrum реже, потому что page 1
+# покрывает больше двух суток.
+COINGECKO_DISCOVERY_NETWORKS = (
+    {"network": "eth", "interval_minutes": 20},
+    {"network": "base", "interval_minutes": 20},
+    {"network": "arc", "interval_minutes": 20},
+    {"network": "arbitrum", "interval_minutes": 60},
+)
+
+_AUTH_BY_NETWORK = {
+    item["network"]: item
+    for item in COINGECKO_DISCOVERY_NETWORKS
+}
+
+
+def coingecko_discovery_network_ids():
+    return [item["network"] for item in COINGECKO_DISCOVERY_NETWORKS]
+
+
+def coingecko_discovery_interval(network):
+    item = _AUTH_BY_NETWORK.get(network)
+    if item is None:
+        return None
+    return timedelta(minutes=item["interval_minutes"])
