@@ -8,6 +8,10 @@ coingecko_authenticated_new_pools. Публичный GeckoTerminal из CLI
 
 После save_pair идея идёт обычным путём: watchlist, проверки цены,
 paper engine. Отдельного paper-контура здесь нет.
+
+С v0.10.3 каждое matched DexScreener наблюдение дописывается в
+discovery_market_snapshots. Scoring, пороги и состояние кандидата
+не меняются. Новый score по истории не считается.
 """
 
 import json
@@ -41,6 +45,7 @@ from discovery_store import (
     API_PROVIDER_COINGECKO,
     SOURCE_COINGECKO,
     SOURCE_GECKO,
+    append_market_snapshot,
     attach_usage_job_run,
     ensure_discovery_runtime_tables,
     get_network_state,
@@ -73,6 +78,26 @@ COVERAGE_HISTORY_LIMIT = 100
 DISCOVERY_OVERLAP = timedelta(minutes=15)
 INITIAL_LOOKBACK = timedelta(minutes=30)
 _COMPLETE_STOPS = frozenset(("cutoff", "empty_page"))
+_SNAPSHOT_BLOCK_STATUSES = frozenset((
+    "unsupported_network",
+    "unsupported_quote",
+    "unverified_quote_token",
+    "missing_pool_address",
+    "missing_network",
+    "invalid_pool_address",
+    "missing_base_token",
+    "missing_quote_token",
+    "reverse_pair",
+    "DEX_PAIR_NOT_FOUND",
+))
+_SNAPSHOT_BLOCK_REASONS = frozenset((
+    "unsupported_network",
+    "unsupported_quote",
+    "unverified_quote_token",
+    "missing_pool_address",
+    "dex_pair_not_found",
+    "dex_quote_rejected",
+))
 _EVM_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}|0x[0-9a-fA-F]{64}")
 _SOLANA_ADDRESS_RE = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
 
@@ -252,6 +277,8 @@ def empty_summary(dry_run=False):
         "eligible_score": 0,
         "saved_new_ideas": 0,
         "existing_pairs": 0,
+        "snapshots_written": 0,
+        "snapshot_errors": 0,
         "errors": 0,
         "api_errors": 0,
         "api_error_kinds": [],
@@ -281,6 +308,8 @@ def format_report(summary):
         ("Eligible score >=70", summary["eligible_score"]),
         ("Existing ideas", summary["existing_pairs"]),
         ("New ideas saved", summary["saved_new_ideas"]),
+        ("Market snapshots written", summary.get("snapshots_written", 0)),
+        ("Snapshot errors", summary.get("snapshot_errors", 0)),
         ("Errors", summary["errors"]),
         ("Unsupported networks", summary["unsupported_network"]),
         ("Unsupported quote", summary["unsupported_quote"]),
@@ -467,6 +496,10 @@ def _decide_pool(parsed, pool_key, enrich_pair, summary):
         decision["reason"] = "dex_pair_not_found"
         return decision
 
+    if isinstance(enriched, dict):
+        decision["enriched"] = enriched
+        decision["market_matched"] = True
+
     market_reason = _market_reason(enriched)
     if market_reason == "invalid_price":
         summary["invalid_price"] += 1
@@ -544,7 +577,9 @@ def _apply_save_cap(decided):
 
 
 def _persist(decided, now, summary):
+    observed_at = utc_now_text(now)
     for item in decided:
+        candidate = None
         try:
             if item["will_save"]:
                 outcome = _save_idea(item)
@@ -552,9 +587,83 @@ def _persist(decided, now, summary):
                     summary["existing_pairs"] += 1
             if item.get("pool_key") is None:
                 continue
-            upsert_candidate(_candidate_fields(item), now=now)
+            candidate = upsert_candidate(_candidate_fields(item), now=now)
         except Exception:
             summary["errors"] += 1
+            continue
+        _record_market_snapshot(item, candidate, observed_at, summary)
+
+
+def _record_market_snapshot(item, candidate, observed_at, summary):
+    try:
+        if not _snapshot_allowed(item, candidate):
+            return
+        enriched = item.get("enriched")
+        append_market_snapshot(
+            candidate.get("id"),
+            observed_at,
+            _pair_number(enriched, "priceUsd"),
+            _pair_number(enriched, "liquidity", "usd"),
+            _pair_number(enriched, "volume", "h24"),
+            _pair_number(enriched, "priceChange", "h24"),
+            _observation_score(item, "risk_score"),
+            _observation_score(item, "potential_score"),
+            _observation_score(item, "final_score"),
+            item.get("status"),
+            item.get("reason"),
+        )
+    except Exception:
+        summary["snapshot_errors"] += 1
+        return
+    summary["snapshots_written"] += 1
+
+
+def _snapshot_allowed(item, candidate):
+    if not isinstance(candidate, dict) or candidate.get("id") is None:
+        return False
+    if not item.get("market_matched"):
+        return False
+    if not isinstance(item.get("enriched"), dict):
+        return False
+    if item.get("status") in _SNAPSHOT_BLOCK_STATUSES:
+        return False
+    if item.get("reason") in _SNAPSHOT_BLOCK_REASONS:
+        return False
+    return True
+
+
+def _observation_score(item, name):
+    if not item.get("score_ready"):
+        return None
+    value = item.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _pair_number(pair, *path):
+    current = pair
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return _optional_real(current)
+
+
+def _optional_real(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
 
 
 def _save_idea(item):
@@ -789,6 +898,7 @@ def _decision_shell(parsed, pool_key, mapping):
         "final_score": None,
         "pair_id": None,
         "enriched": None,
+        "market_matched": False,
         "existing": False,
         "will_save": False,
         "score_ready": False,
@@ -1267,6 +1377,8 @@ def format_auth_report(summary):
     lines.append("Eligible: {0}".format(summary.get("eligible_score", 0)))
     lines.append("Existing: {0}".format(summary.get("existing_pairs", 0)))
     lines.append("Saved: {0}".format(summary.get("saved_new_ideas", 0)))
+    lines.append("Market snapshots written: {0}".format(summary.get("snapshots_written", 0)))
+    lines.append("Snapshot errors: {0}".format(summary.get("snapshot_errors", 0)))
     lines.append("")
     lines.append("NETWORK COVERAGE")
     pagination = summary.get("pagination") or {}

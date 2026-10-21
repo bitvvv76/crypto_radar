@@ -4,8 +4,12 @@
 Торговые таблицы здесь не изменяются. Уникальность кандидата:
 source + source_network + pool_address.
 
+discovery_market_snapshots — append-only история рыночных наблюдений
+с v0.10.3. Старые запуски не дописываются. UPDATE и DELETE строк
+снимка запрещены. API key в эти таблицы не пишется.
+
 Отдельно хранятся watermark authenticated discovery и локальный счётчик
-CoinGecko Demo credits. API key в эти таблицы не пишется.
+CoinGecko Demo credits.
 """
 
 import os
@@ -55,6 +59,41 @@ def ensure_discovery_tables(db_path=None):
         connection.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_candidates_identity
             ON discovery_candidates (source, source_network, pool_address)
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS discovery_market_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id INTEGER NOT NULL,
+                observed_at TEXT NOT NULL,
+                price_usd REAL,
+                liquidity_usd REAL,
+                volume_24h REAL,
+                price_change_24h REAL,
+                risk_score INTEGER,
+                potential_score INTEGER,
+                final_score INTEGER,
+                status TEXT,
+                reason TEXT,
+                FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id)
+            )
+        """)
+        connection.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_market_snapshots_candidate_observed
+            ON discovery_market_snapshots (candidate_id, observed_at)
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_discovery_market_snapshots_no_update
+            BEFORE UPDATE ON discovery_market_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'discovery_market_snapshots is append-only');
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_discovery_market_snapshots_no_delete
+            BEFORE DELETE ON discovery_market_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'discovery_market_snapshots is append-only');
+            END
         """)
         connection.execute("COMMIT")
     except Exception:
@@ -195,6 +234,87 @@ def get_candidate(source, source_network, pool_address, db_path=None):
         if row is None:
             return None
         return {key: row[key] for key in row.keys()}
+    finally:
+        connection.close()
+
+
+def append_market_snapshot(
+    candidate_id,
+    observed_at,
+    price_usd,
+    liquidity_usd,
+    volume_24h,
+    price_change_24h,
+    risk_score,
+    potential_score,
+    final_score,
+    status,
+    reason,
+    db_path=None,
+):
+    """
+    INSERT одной строки наблюдения. discovery_candidates не обновляет.
+    observed_at обязан прийти из момента запуска: своего datetime.now() нет.
+    """
+    if candidate_id is None:
+        raise ValueError("candidate_id is required")
+    if observed_at is None:
+        raise ValueError("observed_at is required")
+
+    ensure_discovery_tables(db_path)
+    moment = utc_now_text(observed_at)
+    connection = _connect(db_path)
+    try:
+        connection.execute("BEGIN")
+        cursor = connection.execute("""
+            INSERT INTO discovery_market_snapshots (
+                candidate_id,
+                observed_at,
+                price_usd,
+                liquidity_usd,
+                volume_24h,
+                price_change_24h,
+                risk_score,
+                potential_score,
+                final_score,
+                status,
+                reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            candidate_id,
+            moment,
+            price_usd,
+            liquidity_usd,
+            volume_24h,
+            price_change_24h,
+            risk_score,
+            potential_score,
+            final_score,
+            status,
+            reason,
+        ))
+        row_id = cursor.lastrowid
+        connection.execute("COMMIT")
+        return row_id
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
+def get_market_snapshots(candidate_id, db_path=None):
+    if not _table_exists(db_path, "discovery_market_snapshots"):
+        return []
+    connection = _connect(db_path)
+    try:
+        rows = connection.execute("""
+            SELECT *
+            FROM discovery_market_snapshots
+            WHERE candidate_id = ?
+            ORDER BY observed_at ASC, id ASC
+        """, (candidate_id,)).fetchall()
+        return [{key: row[key] for key in row.keys()} for row in rows]
     finally:
         connection.close()
 
